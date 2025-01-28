@@ -32,7 +32,7 @@ pip install --no-build-isolation -Ceditable.rebuild=true -ve .
 
 ## Development Plan
 - [ ] Import code from other repos.
-- [ ] ???
+- [ ] Figure out dependency management for deployment.
 
 ## FAQ
 - Why the name? 

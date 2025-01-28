@@ -1,0 +1,41 @@
+name: iskra
+channels:
+  - conda-forge
+dependencies:
+  - ninja
+  - pip
+  - pip:
+      # Linters:
+      - ruff
+      - flake8
+      - flake8-copyright
+      - mypy
+      - black
+      - isort
+      - types-requests
+      - nvtx
+      - matplotlib
+      - jupyterlab
+      - ipywidgets
+      - widgetsnbextension
+      - ipympl
+      # Testing:
+      - pytest
+      - pytest-cases
+      - pytest-cov
+      # Documentation
+      - Sphinx
+      - sphinx-book-theme
+      - myst-parser
+      - sphinx-copybutton
+      - sphinx-autobuild===2021.3.14
+      - sphinx-autodoc-typehints
+      - colorama
+      # Deployment
+      - nanobind==1.4.0
+      - scikit-build-core==0.5.1
+      - pyproject-metadata
+      - setuptools
+      - twine>=1.11.0
+      - wheel
+      - packaging

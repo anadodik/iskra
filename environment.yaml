@@ -1,0 +1,40 @@
+name: iskra
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python==3.10
+  - pytorch==2.5.1
+  - torchvision
+  - pytorch-cuda=12.4
+  - cuda-nvcc=12.4
+  - cuda-runtime=12.4
+  - cuda-libraries-dev=12.4
+  - libcublas-dev=12.4
+  - cupy
+  - cudnn
+  - cutensor 
+  - nccl
+  - conda-forge::ffmpeg
+  - pip
+  - pip:
+    # Core libraries
+    - numpy
+    - scipy
+    - networkx
+    # Visualizations
+    - pillow==9.5
+    - imgui[full]
+    - moderngl==5.8.0
+    - pyrr
+    - palettable
+    - imageio[ffmpeg]
+    # Mesh IO
+    - trimesh
+    - meshio
+    - libigl
+    - fsspec[http]
+    # Helpers
+    - rich
+    - typing-extensions
