@@ -10,6 +10,7 @@ from iskra.geometry.barycentric import (
     triangle_barycentric_coordinates,
 )
 from iskra.geometry.bbox import BBox
+from iskra.geometry.coordinate_system import coordinate_system
 from iskra.geometry.distances import (
     closest_edge,
     closest_triangle,
@@ -76,4 +77,5 @@ __all__ = [
     "DualQuaternion",
     "extrude_boundary_polygon",
     "BBox",
+    "coordinate_system",
 ]
