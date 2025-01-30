@@ -18,7 +18,7 @@ except ImportError:
 import torch
 
 from iskra.geometry import barycentric_interpolate, dual_quat, edge_lengths, quat
-from iskra.topology import scatter_vertex_values
+from iskra.topology import face_index
 
 
 @dataclass
@@ -185,19 +185,19 @@ class SkinningHandles(torch.nn.Module):
 
     @property
     def rest_points(self) -> torch.Tensor:
-        return scatter_vertex_values(self.rest_vertices, self.point_handle_idx)
+        return face_index(self.rest_vertices, self.point_handle_idx)
 
     @property
     def rest_bones(self) -> torch.Tensor:
-        return scatter_vertex_values(self.rest_vertices, self.bone_handle_idx)
+        return face_index(self.rest_vertices, self.bone_handle_idx)
 
     @property
     def points(self) -> torch.Tensor:
-        return scatter_vertex_values(self.vertices, self.point_handle_idx)
+        return face_index(self.vertices, self.point_handle_idx)
 
     @property
     def bones(self) -> torch.Tensor:
-        return scatter_vertex_values(self.vertices, self.bone_handle_idx)
+        return face_index(self.vertices, self.bone_handle_idx)
 
     def reset_positions(self) -> None:
         self.vertices = self.rest_vertices.clone()
@@ -348,8 +348,8 @@ def handles_to_transforms(
         # .obj files, but the line-segment order is free to change.
         # For this reason, we must use the index of the original handles,
         # not the deformed handles (i.e. frame.bones is not guaranteed to work).
-        points = scatter_vertex_values(frame.vertices, handles.point_handle_idx)
-        bones = scatter_vertex_values(frame.vertices, handles.bone_handle_idx)
+        points = face_index(frame.vertices, handles.point_handle_idx)
+        bones = face_index(frame.vertices, handles.bone_handle_idx)
         point_transform = transform_from_points(rest_points, points)
         inv_rest_bones_transform, bones_transform = transform_from_bones(
             rest_bones, bones

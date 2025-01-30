@@ -38,6 +38,11 @@ pip install --no-build-isolation -Ceditable.rebuild=true -ve .
 
 ### Development Plan
 - [ ] Import code from other repos.
+    - [ ] Topology operations.
+    - [ ] Differential operators: d_01, grad, div, laplacian, mass matrices, etc.
+    - [ ] Mesh loading and saving.
+- [ ] Make sure everything is tested.
+- [ ] Add sphinx documentation.
 - [ ] Figure out dependency management for deployment.
 
 ## FAQ

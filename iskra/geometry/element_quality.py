@@ -2,7 +2,7 @@
 
 import torch
 
-from iskra.topology import scatter_vertex_values
+from iskra.topology import face_index
 
 # TODO: look at quality measures in this article
 # https://people.sc.fsu.edu/~jburkardt/presentations/cg_lab_tetrahedrons.pdf
@@ -42,9 +42,9 @@ def abs_tetrahedron_heights(
     tet_face_idcs = torch.stack(
         [tet_idcs[:, c_idx] for c_idx in face_idx_combinations], -2
     )
-    tet_faces = scatter_vertex_values(vertices, tet_face_idcs.reshape(-1, dim))
+    tet_faces = face_index(vertices, tet_face_idcs.reshape(-1, dim))
     tet_faces = tet_faces.reshape(-1, n_tet_faces, n_tri_verts, dim)  # [B, 4, 3, D]
-    tet_vertices = scatter_vertex_values(vertices, tet_idcs)  # [B, 4, D]
+    tet_vertices = face_index(vertices, tet_idcs)  # [B, 4, D]
     heights_list = []
     for v_i in range(4):
         opposite_triangle = tet_faces[:, v_i, :, :]  # [B, 3, D]

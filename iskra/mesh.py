@@ -18,10 +18,10 @@ from iskra.geometry import BBox, triangle_area_normals, triangle_areas
 from iskra.io import load
 from iskra.logging.logging import getLogger
 from iskra.topology import (
-    boundary_faces,
-    face_to_subface_scatter_add,
-    find_all_subfaces,
-    scatter_vertex_values,
+    boundary,
+    face_index,
+    face_scatter_reduce,
+    get_subfaces,
 )
 
 LOGGER = getLogger(__name__)
@@ -72,7 +72,7 @@ class MeshTopology(torch.nn.Module):
         elif dim > self.intrinsic_dim:
             return torch.zeros([0, dim + 1], device=self.faces.device, dtype=torch.long)
 
-        subfaces = find_all_subfaces(self.faces, dim)
+        subfaces = subfaces(self.faces, dim)
         subfaces = torch.flatten(subfaces, -3, -2)
         subfaces = torch.sort(subfaces, -1)[0]
         subfaces = torch.unique(subfaces, dim=-2)
@@ -86,7 +86,7 @@ class MeshTopology(torch.nn.Module):
         if subface_dim < 0:
             subface_dim = self.intrinsic_dim + subface_dim
 
-        subfaces = find_all_subfaces(faces, subface_dim)
+        subfaces = subfaces(faces, subface_dim)
         n_subfaces = subfaces.shape[-2]
         subfaces = torch.flatten(subfaces, -3, -2)
         subfaces = torch.sort(subfaces, -1)[0]
@@ -147,7 +147,7 @@ class MeshGeometry(torch.nn.Module):
 
     def __getitem__(self, faces: torch.Tensor) -> torch.Tensor:
         if isinstance(faces, torch.Tensor):
-            return scatter_vertex_values(self.vertices, faces)
+            return face_index(self.vertices, faces)
         elif isinstance(faces, Index):
             return faces.index_into(self.vertices, 0, self.topology)
         else:
@@ -155,10 +155,10 @@ class MeshGeometry(torch.nn.Module):
 
     @property
     def faces(self) -> torch.Tensor:
-        return scatter_vertex_values(self.vertices, self.topology.faces)
+        return face_index(self.vertices, self.topology.faces)
 
     def subfaces(self, dim: int = -1) -> torch.Tensor:
-        return scatter_vertex_values(self.vertices, self.topology.subfaces(dim))
+        return face_index(self.vertices, self.topology.subfaces(dim))
 
     @property
     def tetrahedra(self) -> torch.Tensor:
@@ -174,7 +174,7 @@ class MeshGeometry(torch.nn.Module):
 
     @property
     def isolated_vertices(self) -> torch.Tensor:
-        return scatter_vertex_values(self.vertices, self.topology.isolated_vertices)
+        return face_index(self.vertices, self.topology.isolated_vertices)
 
     @property
     def area_face_normals(self) -> torch.Tensor:
@@ -201,7 +201,7 @@ class MeshGeometry(torch.nn.Module):
         # )
         # return torch.nn.functional.normalize(normals, dim=-1)
         if self._vertex_normals is None:
-            normals = face_to_subface_scatter_add(
+            normals = face_scatter_reduce(
                 self.area_face_normals,
                 self.topology.faces,
                 self.vertices.shape[0],
@@ -231,7 +231,7 @@ class MeshGeometry(torch.nn.Module):
 
     @property
     def vertex_areas(self) -> torch.Tensor:
-        triple_area = face_to_subface_scatter_add(
+        triple_area = face_scatter_reduce(
             self.face_areas, self.topology.faces, self.topology.n_vertices
         )
         return triple_area / 3
@@ -297,11 +297,11 @@ class Mesh(torch.nn.Module):
         return Mesh(faces, vertices), unique_index
 
     def boundary_mesh(self, return_index: bool = False) -> Self:
-        faces = boundary_faces(self.topo.faces)
+        faces = boundary(self.topo.faces)
         device = faces.device
 
         vertex_idcs: torch.Tensor = faces.reshape(-1).unique()  # type: ignore
-        vertices = scatter_vertex_values(self.geom.vertices, vertex_idcs)
+        vertices = face_index(self.geom.vertices, vertex_idcs)
 
         new_vertex_idcs = torch.arange(vertex_idcs.shape[0], device=device)
         inv_idx = torch.empty(self.n_vertices, dtype=torch.long, device=device)

@@ -1,28 +1,80 @@
 # Copyright (c) 2022 - present, Ana Dodik. All rights reserved.
 
 from itertools import combinations
+from typing import Literal
 
 import networkx as nx
 import scipy.sparse
 import torch
 
 
-def find_all_subfaces(faces: torch.Tensor, subface_dim: int) -> torch.Tensor:
-    """Finds all subsimplices of dimension d in a set of higher-dimensional simplices.
+def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int, ...]]:
+    """_summary_.
+
+    Makes sure triangles/edges are oriented correctly,
+    and that they are opposite to the vertex indexed by
+    their position.
 
     Args:
-        faces (torch.Tensor): A [n_simplices, simplex_dim] tensor containing the
-            vertices of the higher-dimensional simplices.
+        face_dim (int): _description_
+        subface_dim (int): _description_
+
+    Returns:
+        list[tuple[int, ...]]: _description_
+    """
+    if subface_dim == -1:
+        subface_dim = face_dim - 1
+    idcs: list[tuple[int, ...]]
+    if face_dim == 3 and subface_dim == 2:
+        idcs = [(1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)]
+    elif face_dim == 2 and subface_dim == 1:
+        idcs = [(1, 2), (2, 0), (0, 1)]
+    elif face_dim == 1 and subface_dim == 0:
+        idcs = [(1,), (0,)]
+    else:
+        idcs = list(combinations(range(face_dim + 1), face_dim))
+    return idcs
+
+
+def simplex_parity(faces: torch.Tensor) -> torch.Tensor:
+    faces = faces.clone()
+    transpositions = torch.zeros_like(faces[..., 0])
+    for i in range(faces.shape[-1] - 1):
+        min_i = i + faces[..., i:].argmin(-1)
+        # Swap smallest and current:
+        smallest = torch.gather(faces, -1, min_i[..., None])
+        torch.scatter(faces, -1, min_i[..., None], faces[..., i : i + 1])
+        faces[..., i] = smallest[..., 0]
+
+        # If swapped, increment number of transpositions:
+        transpositions += (min_i > i).to(torch.int64)
+    transpositions = transpositions % 2
+    return transpositions
+
+
+def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
+    """Finds all subsimplices of dimension d in a set of higher-dimensional faces.
+
+    Args:
+        faces (torch.Tensor): A [n_faces, simplex_dim] tensor containing the
+            vertices of the higher-dimensional faces.
         subface_dim (int): The dimension of the requested simplex. Note that the simplex
             dimension is one less than the number of its vertices, e.g. edges are
             1-simplices, triangles 2-simplices, etc.
 
     Returns:
         torch.Tensor: A tensor containing all subsimplex indices. Shape is
-            [n_simplices, n_subsimplices_per_simplex, d].
+            [n_simplices, n_subfaces_per_simplex, d].
+            
+        torch.Tensor: The sign says whether the subface, as it appears in the subfaces,
+            is flipped _with regards to some canonical orientation of the subface!_.
+            This means that sign for vertices will _always_ be +1, as they can only
+            have one canonical orientation. This makes it slightly different 
+            from the orientation in DEC's `d_{0, 1}` operator in this case.
+            [???].
     """
     face_dim = faces.shape[-1] - 1
-    if face_dim < subface_dim:
+    if subface_dim != -1 and face_dim < subface_dim:
         raise ValueError(
             f"Cannot find a {subface_dim}-subsimplex of a {face_dim}-simplex."
         )
@@ -30,36 +82,49 @@ def find_all_subfaces(faces: torch.Tensor, subface_dim: int) -> torch.Tensor:
     if face_dim == subface_dim:
         return faces
 
-    idcs: list[tuple[int, ...]]
-    # Make sure triangles/edges are oriented correctly,
-    # and that they are opposite to the vertex indexed by
-    # their position.
-    if face_dim == 3 and subface_dim == 2:
-        idcs = [(3, 1, 2), (2, 0, 3), (1, 3, 0), (0, 2, 1)]
-    elif face_dim == 2 and subface_dim == 1:
-        idcs = [(1, 2), (2, 0), (0, 1)]
-    else:
-        # TODO: find a general fix for subsimplex orientation.
-        idcs = list(combinations(range(face_dim + 1), subface_dim + 1))
+    idcs: list[tuple[int, ...]] = face_to_subface_idcs(face_dim, subface_dim)
+    n_subfaces = len(idcs)
     subsimplex_list = [faces[:, nbh_idx] for nbh_idx in idcs]
-    return torch.stack(subsimplex_list, -2)
+    subfaces = torch.stack(subsimplex_list, -2)
+    subface_flipped = simplex_parity(subfaces)
+    subface_sign = torch.where(subface_flipped.bool(), -1.0, 1.0)
+    subface_sign = subface_sign.reshape(-1, n_subfaces)
+
+    subfaces = torch.flatten(subfaces, -3, -2)
+    subfaces, _ = torch.sort(subfaces, -1)
+    subfaces, face_to_subface = torch.unique(subfaces, dim=-2, return_inverse=True)
+
+    face_to_subface = face_to_subface.reshape(-1, n_subfaces)
+    return subfaces, face_to_subface, subface_sign
 
 
-def face_to_subface_idcs(face_dim: int) -> list[tuple[int, ...]]:
-    idcs: list[tuple[int, ...]]
-    if face_dim == 3:
-        idcs = [(3, 1, 2), (2, 0, 3), (1, 3, 0), (0, 2, 1)]
-    elif face_dim == 2:
-        idcs = [(1, 2), (2, 0), (0, 1)]
-    elif face_dim == 1:
-        idcs = [(0,), (1,)]
+def adjacency_matrix(
+    faces: torch.Tensor, subface_dim: int = -1, signed: bool = False
+) -> torch.Tensor:
+    device = faces.device
+    n_faces, face_dim = faces.shape[0], faces.shape[-1]
+    
+    subfaces, face_to_subface, subface_sign = get_subfaces(faces, subface_dim)
+    n_subfaces = subfaces.shape[0]
+    n_subfaces_per_face = face_to_subface.shape[-1]
+    i = torch.cat(n_subfaces_per_face * [torch.arange(n_faces, device=device)])
+    j = face_to_subface.mT.flatten()
+    idcs = torch.stack([i, j])
+    if signed:
+        values = subface_sign.mT.flatten()
+        if face_dim == 1: # whyyyyyyyy is this necessary?!?!?!?!!?
+            values = torch.cat(
+                [
+                    torch.ones([n_faces], device=device),
+                    -torch.ones([n_faces], device=device),
+                ]
+            )
     else:
-        # TODO: find a general way to guarantee positive simplex orientation.
-        idcs = list(combinations(range(face_dim + 1), face_dim))
-    return idcs
+        values = torch.ones_like(subface_sign.mT.flatten())
+    return torch.sparse_coo_tensor(idcs, values, [n_faces, n_subfaces])
 
 
-def boundary_faces(faces: torch.Tensor) -> torch.Tensor:
+def boundary(faces: torch.Tensor) -> torch.Tensor:
     idcs: list[tuple[int, ...]] = face_to_subface_idcs(faces.shape[-1] - 1)
     half_faces = torch.cat([faces[:, idx] for idx in idcs], 0)
     sorted_edges, _ = torch.sort(half_faces, dim=-1)
@@ -95,21 +160,7 @@ def ordered_boundary_edges(edges: torch.Tensor) -> list[torch.Tensor]:
     return component_edges
 
 
-def face_to_subface_scatter_add(
-    values: torch.Tensor, faces: torch.Tensor, n_subfaces: int
-) -> torch.Tensor:
-    assert values.shape[0] == faces.shape[0]
-    assert faces.ndim == 2
-    values_shape = values.shape[1:]
-    scattered = torch.zeros([n_subfaces, *values_shape], device=values.device)
-    broadcast_faces = faces[(...,) + (None,) * len(values_shape)]
-    broadcast_faces = broadcast_faces.expand(-1, -1, *values_shape)
-    for i in range(faces.shape[-1]):
-        scattered.scatter_add_(0, broadcast_faces[:, i, ...], values)
-    return scattered
-
-
-def scatter_vertex_values(
+def face_index(
     values: torch.Tensor, faces: torch.Tensor, squeeze: bool = True
 ) -> torch.Tensor:
     """Scatters vertex values according to a tensor of vertex indices.
@@ -154,6 +205,35 @@ def scatter_vertex_values(
         result = result.squeeze(faces.ndim - 1)
 
     return result
+
+
+def reduce_on_subface(
+    values: torch.Tensor,
+    faces: torch.Tensor,
+    n_subfaces: int,
+    reduce: Literal["sum", "prod", "mean", "amax", "amin"],
+) -> torch.Tensor:
+    """Take values defined on mesh faces and average them onto its vertices.
+
+    Args:
+        values (torch.Tensor): Values defined on the mesh faces.
+        faces (torch.Tensor): Face indices.
+        n_subfaces (int): Total number of subfaces in the mesh.
+        reduce (Literal["sum", "prod", "mean", "amax", "amin"]): Reduction operation.
+
+    Returns:
+        torch.Tensor: _description_
+    """
+    assert values.shape[0] == faces.shape[0]
+    assert faces.ndim == 2
+
+    values_shape = values.shape[1:]
+    scattered = torch.zeros([n_subfaces, *values_shape], device=values.device)
+    broadcast_faces = faces[(...,) + (None,) * len(values_shape)]
+    broadcast_faces = broadcast_faces.expand(-1, -1, *values_shape)
+    for i in range(faces.shape[-1]):
+        scattered.scatter_reduce_(0, broadcast_faces[:, i, ...], values, reduce=reduce)
+    return scattered
 
 
 def find_cliques(edges: torch.Tensor, max_d: int) -> list[torch.Tensor]:
