@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from iskra.topology import adjacency_matrix, get_subfaces
+from iskra.topology import get_subfaces, incidence_matrix
 
 
 @pytest.fixture

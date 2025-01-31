@@ -22,8 +22,8 @@ def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int
     Returns:
         list[tuple[int, ...]]: _description_
     """
-    if subface_dim == -1:
-        subface_dim = face_dim - 1
+    if subface_dim < 0:
+        subface_dim = face_dim - subface_dim
     idcs: list[tuple[int, ...]]
     if face_dim == 3 and subface_dim == 2:
         idcs = [(1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)]
@@ -65,11 +65,11 @@ def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
     Returns:
         torch.Tensor: A tensor containing all subsimplex indices. Shape is
             [n_simplices, n_subfaces_per_simplex, d].
-            
+
         torch.Tensor: The sign says whether the subface, as it appears in the subfaces,
             is flipped _with regards to some canonical orientation of the subface!_.
             This means that sign for vertices will _always_ be +1, as they can only
-            have one canonical orientation. This makes it slightly different 
+            have one canonical orientation. This makes it slightly different
             from the orientation in DEC's `d_{0, 1}` operator in this case.
             [???].
     """
@@ -98,12 +98,12 @@ def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
     return subfaces, face_to_subface, subface_sign
 
 
-def adjacency_matrix(
+def incidence_matrix(
     faces: torch.Tensor, subface_dim: int = -1, signed: bool = False
 ) -> torch.Tensor:
     device = faces.device
     n_faces, face_dim = faces.shape[0], faces.shape[-1]
-    
+
     subfaces, face_to_subface, subface_sign = get_subfaces(faces, subface_dim)
     n_subfaces = subfaces.shape[0]
     n_subfaces_per_face = face_to_subface.shape[-1]
@@ -112,7 +112,7 @@ def adjacency_matrix(
     idcs = torch.stack([i, j])
     if signed:
         values = subface_sign.mT.flatten()
-        if face_dim == 1: # whyyyyyyyy is this necessary?!?!?!?!!?
+        if face_dim == 1:  # whyyyyyyyy is this necessary?!?!?!?!!?
             values = torch.cat(
                 [
                     torch.ones([n_faces], device=device),

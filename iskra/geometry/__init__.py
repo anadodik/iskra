@@ -11,6 +11,7 @@ from iskra.geometry.barycentric import (
 )
 from iskra.geometry.bbox import BBox
 from iskra.geometry.coordinate_system import coordinate_system
+from iskra.geometry.cotan_weights import cotan_weights, cotan_weights_intrinsic
 from iskra.geometry.distances import (
     closest_edge,
     closest_triangle,
@@ -37,7 +38,12 @@ from iskra.geometry.element_quality import (
 from iskra.geometry.extrude_boundary import extrude_boundary_polygon
 from iskra.geometry.normals import edge_normals, triangle_area_normals
 from iskra.geometry.quaternions import Quaternion
-from iskra.geometry.volume import edge_lengths, tetrahedron_volumes, triangle_areas
+from iskra.geometry.volume import (
+    edge_lengths,
+    tetrahedron_volumes,
+    triangle_areas,
+    volume_form,
+)
 
 __all__ = [
     "point_dist",
@@ -57,6 +63,7 @@ __all__ = [
     "edge_lengths",
     "triangle_areas",
     "tetrahedron_volumes",
+    "volume_form",
     "triangle_barycentric_coordinates",
     "tetrahedron_barycentric_coordinates",
     "barycentric_coordinates",
@@ -78,4 +85,6 @@ __all__ = [
     "extrude_boundary_polygon",
     "BBox",
     "coordinate_system",
+    "cotan_weights",
+    "cotan_weights_intrinsic",
 ]
