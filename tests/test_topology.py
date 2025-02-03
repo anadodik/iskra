@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from iskra.topology import get_subfaces, incidence_matrix
+from iskra.topology import connected_components, get_subfaces, incidence_matrix
 
 
 @pytest.fixture
@@ -31,23 +31,32 @@ def edges() -> torch.Tensor:
     )
 
 
+@pytest.fixture
+def disconnected() -> torch.Tensor:
+    n_vertices = 6
+    faces = torch.tensor(
+        [[1, 2, 3], [2, 4, 3]],
+        dtype=torch.int64,
+    )
+    return n_vertices, faces
+
+
 def test_tetrahedra_subfaces(tetrahedra: torch.Tensor) -> None:
     tris, tets_to_tris, tets_to_tris_sign = get_subfaces(tetrahedra)
     tris_expected = torch.tensor(
         [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4]]
     )
     torch.testing.assert_close(tris, tris_expected, rtol=0, atol=0)
-    
-    tets_to_tris_expected = torch.tensor(
-        [[3, 2, 1, 0], [3, 6, 4, 5]]
-    )
+
+    tets_to_tris_expected = torch.tensor([[3, 2, 1, 0], [3, 6, 4, 5]])
     torch.testing.assert_close(tets_to_tris, tets_to_tris_expected, rtol=0, atol=0)
-    
-    print(tets_to_tris_sign)
+
     tets_to_tris_sign_expeceted = torch.tensor(
         [[1.0, -1.0, 1.0, -1.0], [-1.0, -1.0, -1.0, 1.0]]
     )
-    torch.testing.assert_close(tets_to_tris_sign, tets_to_tris_sign_expeceted, rtol=0, atol=0)
+    torch.testing.assert_close(
+        tets_to_tris_sign, tets_to_tris_sign_expeceted, rtol=0, atol=0
+    )
 
 
 def test_triangles_subfaces(triangles: torch.Tensor) -> None:
@@ -77,3 +86,12 @@ def test_edges_subfaces(edges: torch.Tensor) -> None:
     torch.testing.assert_close(
         verts_to_edges_sign, verts_to_edges_sign_expected, rtol=0, atol=0
     )
+
+
+def test_connected_components(disconnected: tuple[int, torch.Tensor]):
+    n_components, vertex_labels, face_labels = connected_components(*disconnected)
+    assert n_components == 3
+    torch.testing.assert_close(
+        vertex_labels, torch.tensor([0, 1, 1, 1, 1, 2]), rtol=0, atol=0
+    )
+    torch.testing.assert_close(face_labels, torch.tensor([1, 1]), rtol=0, atol=0)

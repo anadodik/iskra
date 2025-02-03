@@ -7,6 +7,8 @@ import networkx as nx
 import scipy.sparse
 import torch
 
+from iskra.sparse import torch_to_scipy
+
 
 def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int, ...]]:
     """_summary_.
@@ -71,7 +73,8 @@ def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
             This means that sign for vertices will _always_ be +1, as they can only
             have one canonical orientation. This makes it slightly different
             from the orientation in DEC's `d_{0, 1}` operator in this case.
-            [???].
+
+        [???].
     """
     face_dim = faces.shape[-1] - 1
     if subface_dim != -1 and face_dim < subface_dim:
@@ -80,12 +83,12 @@ def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
         )
 
     if face_dim == subface_dim:
-        return faces
-
-    idcs: list[tuple[int, ...]] = face_to_subface_idcs(face_dim, subface_dim)
-    n_subfaces = len(idcs)
-    subsimplex_list = [faces[:, nbh_idx] for nbh_idx in idcs]
-    subfaces = torch.stack(subsimplex_list, -2)
+        subfaces = faces.clone()
+    else:
+        idcs: list[tuple[int, ...]] = face_to_subface_idcs(face_dim, subface_dim)
+        n_subfaces = len(idcs)
+        subsimplex_list = [faces[:, nbh_idx] for nbh_idx in idcs]
+        subfaces = torch.stack(subsimplex_list, -2)
     subface_flipped = simplex_parity(subfaces)
     subface_sign = torch.where(subface_flipped.bool(), -1.0, 1.0)
     subface_sign = subface_sign.reshape(-1, n_subfaces)
@@ -124,6 +127,28 @@ def incidence_matrix(
     return torch.sparse_coo_tensor(idcs, values, [n_faces, n_subfaces])
 
 
+def vertex_adjacency_matrix(n_vertices: int, faces: torch.Tensor) -> torch.Tensor:
+    """*Undirected* vertex-vertex adjacency matrix.
+
+    !!! tip
+
+        The faces argument can be an arbitrary simplex. Tets, triangles, and edges all work.
+
+    Args:
+        n_vertices (int): Number of vertices in your mesh.
+        faces (torch.Tensor): Tensor  representing the mesh topology with shape `[n_faces, n_face_corners]`,
+            where `n_faces` is the number of faces and `n_face_corners` is the number of simplex corners,.
+
+    Returns:
+        torch.Tensor: A sparse COO tensor of shape `[n_vertices, n_vertices]`.
+            An entry is 1 if two vertices share an edge.
+    """
+    edges, _, _ = get_subfaces(faces, subface_dim=1)
+    idx = torch.cat([edges, edges.flip(-1)]).mT
+    values = torch.ones([2 * edges.shape[0]], device=faces.device)
+    return torch.sparse_coo_tensor(idx, values, [n_vertices, n_vertices])
+
+
 def boundary(faces: torch.Tensor) -> torch.Tensor:
     idcs: list[tuple[int, ...]] = face_to_subface_idcs(faces.shape[-1] - 1)
     half_faces = torch.cat([faces[:, idx] for idx in idcs], 0)
@@ -133,6 +158,51 @@ def boundary(faces: torch.Tensor) -> torch.Tensor:
     )
     inverse_counts = counts[unique_idcs]
     return half_faces[inverse_counts == 1, :]
+
+
+def connected_components(
+    n_vertices: int, faces: torch.Tensor
+) -> tuple[int, torch.Tensor, torch.Tensor]:
+    """Finds the connected components of a mesh.
+
+    !!! tip
+
+        The faces argument can be an arbitrary simplex. Tets, triangles, and edges all work.
+
+    Args:
+        n_vertices (int): Number of vertices in your mesh.
+        faces (torch.Tensor): Tensor  representing the mesh topology with shape `[n_faces, n_face_corners]`,
+            where `n_faces` is the number of faces and `n_face_corners` is the number of simplex corners,.
+
+    Returns:
+        n_components (int): Number of connected components in the mesh.
+        vertex_labels (torch.Tensor): A tensor of shape `[n_vertices]`
+            with integer labels signifying the connected component of each vertex.
+        face_labels (torch.Tensor): A tensor of shape `[n_faces]`
+            with integer labels signifying the connected component of each face.
+    """
+    device = faces.device
+    adjacency = vertex_adjacency_matrix(n_vertices, faces)
+    labels = torch.zeros(n_vertices, device=device)
+    adjacency_scipy = torch_to_scipy(adjacency)
+    n_comp, labels = scipy.sparse.csgraph.connected_components(adjacency_scipy)
+    labels = torch.from_numpy(labels).to(device=device, dtype=torch.long)
+
+    # all vertices in a face must belong to the same component:
+    face_labels = labels[faces[:, 0]]
+    return n_comp, labels, face_labels
+
+
+def select_linked(start_vertex: int, faces: torch.Tensor) -> torch.Tensor:
+    pass
+
+
+def loose_vertices(n_vertices: int, faces: torch.Tensor) -> torch.Tensor:
+    pass
+
+
+def flip_edges() -> torch.Tensor:
+    pass
 
 
 def ordered_boundary_edges(edges: torch.Tensor) -> list[torch.Tensor]:
@@ -168,20 +238,24 @@ def face_index(
     This function takes in a function value associated with each vertex
     and a high-dimensional tensor of vertex indices, and outputs a tensor
     that contains those function values in positions defined by the index.
-    Some concrete examples are:
-    - Scattering 2D triangle positions:
-        - input tensor shapes: [n_vertices, 2], [n_triangles, 3]
-        - output tensor shape: [n_triangles x 3 x 2].
-    - Scattering 3D triangle positions:
-        - input tensor shapes: [n_vertices, 3], [n_triangles, 3]
-        - output tensor shape: [n_triangles x 3 x 3].
-    - Scattering 3D tet positions:
-        - input tensor shapes: [n_vertices, 3], [n_tets, 4]
-        - output tensor shape: [n_triangles x 4 x 3].
-    - Scattering 4D tet positions:
-        - input tensor shapes: [n_vertices, 4], [n_tets, 4]
-        - output tensor shape: [n_triangles x 4 x 4].
-    Works with higher dimensional indices too.
+
+    !!! example
+
+        Some concrete examples are:
+
+        - Scattering 2D triangle positions:
+            - input tensor shapes: `[n_vertices, 2]`, `[n_triangles, 3]`
+            - output tensor shape: `[n_triangles x 3 x 2]`.
+        - Scattering 3D triangle positions:
+            - input tensor shapes: `[n_vertices, 3]`, `[n_triangles, 3]`
+            - output tensor shape: `[n_triangles x 3 x 3]`.
+        - Scattering 3D tet positions:
+            - input tensor shapes: `[n_vertices, 3]`, `[n_tets, 4]`
+            - output tensor shape: `[n_triangles x 4 x 3]`.
+        - Scattering 4D tet positions:
+            - input tensor shapes: `[n_vertices, 4]`, `[n_tets, 4]`
+            - output tensor shape: `[n_triangles x 4 x 4]`.
+        Works with higher dimensional indices too.
 
     Args:
         values: A tensor of shape [n_vertices, value_dim] assigning a
