@@ -24,13 +24,12 @@ dependencies:
       - pytest-cases
       - pytest-cov
       # Documentation
-      - Sphinx
-      - sphinx-book-theme
-      - myst-parser
-      - sphinx-copybutton
-      - sphinx-autobuild===2021.3.14
-      - sphinx-autodoc-typehints
-      - colorama
+      - mkdocs
+      - mkdocs-material
+      - mkdocstrings
+      - mkdocstrings-python
+      - mkdocs-autorefs
+      - griffe_typingdoc
       # Deployment
       - nanobind==1.4.0
       - scikit-build-core==0.5.1
