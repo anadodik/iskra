@@ -11,7 +11,7 @@ from iskra.sparse import torch_to_scipy
 
 
 def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int, ...]]:
-    """_summary_.
+    """Returns indices used to find subfaces of intrinsic dimension `subface_dim` within faces of dimension `face_dim`.
 
     Makes sure triangles/edges are oriented correctly,
     and that they are opposite to the vertex indexed by
@@ -29,6 +29,13 @@ def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int
     idcs: list[tuple[int, ...]]
     if face_dim == 3 and subface_dim == 2:
         idcs = [(1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)]
+    if face_dim == 3 and subface_dim == 1:
+        # The edge ordering is s.t. UVW form a triangle,
+        # and U is opposite to u, V to v and W to w.
+        # U = (0, 1), V = (1, 2), W = (2, 0)
+        # u = (2, 3), v = (0, 3), w = (1, 3)
+        # i.e., it follows the convention of [https://en.wikipedia.org/wiki/Heron%27s_formula#Volume_of_a_tetrahedron](https://en.wikipedia.org/wiki/Heron%27s_formula#Volume_of_a_tetrahedron).
+        idcs = [(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)]
     elif face_dim == 2 and subface_dim == 1:
         idcs = [(1, 2), (2, 0), (0, 1)]
     elif face_dim == 1 and subface_dim == 0:
@@ -76,6 +83,11 @@ def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
 
         [???].
     """
+    if faces.ndim != 2:
+        raise ValueError(
+            "faces must be of shape [n_faces, n_corners], "
+            f"but face.shape is {faces.shape}."
+        )
     face_dim = faces.shape[-1] - 1
     if subface_dim != -1 and face_dim < subface_dim:
         raise ValueError(

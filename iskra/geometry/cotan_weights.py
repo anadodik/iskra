@@ -2,7 +2,7 @@
 
 import torch
 
-from iskra.geometry import edge_lengths
+from iskra.geometry.volume import edge_lengths
 from iskra.topology import face_index, get_subfaces
 
 
