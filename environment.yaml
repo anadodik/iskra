@@ -23,6 +23,7 @@ dependencies:
     - numpy
     - scipy
     - networkx
+    - cholespy
     # Visualizations
     - pillow==9.5
     - imgui[full]

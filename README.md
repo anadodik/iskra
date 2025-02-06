@@ -5,7 +5,7 @@
 This repository contains a lightweight geometry processing library that is meant to be a one-stop-shop for all of your geometric needs. Iskra is:
 * modern,
 * Python-first,
-* non-intrusive,
+* simple by default, powerful when needed,
 * fully differentiable (if needed),
 * functionality-wise on pair with `gptoolbox`,
 * actievely maintained.
