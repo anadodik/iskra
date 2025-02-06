@@ -95,7 +95,8 @@ def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
         )
 
     if face_dim == subface_dim:
-        subfaces = faces.clone()
+        subfaces = faces.clone()[..., None, :]
+        n_subfaces = 1
     else:
         idcs: list[tuple[int, ...]] = face_to_subface_idcs(face_dim, subface_dim)
         n_subfaces = len(idcs)
@@ -117,7 +118,7 @@ def incidence_matrix(
     faces: torch.Tensor, subface_dim: int = -1, signed: bool = False
 ) -> torch.Tensor:
     device = faces.device
-    n_faces, face_dim = faces.shape[0], faces.shape[-1]
+    n_faces, face_dim = faces.shape[0], faces.shape[-1] - 1
 
     subfaces, face_to_subface, subface_sign = get_subfaces(faces, subface_dim)
     n_subfaces = subfaces.shape[0]
@@ -130,13 +131,13 @@ def incidence_matrix(
         if face_dim == 1:  # whyyyyyyyy is this necessary?!?!?!?!!?
             values = torch.cat(
                 [
-                    torch.ones([n_faces], device=device),
                     -torch.ones([n_faces], device=device),
+                    torch.ones([n_faces], device=device),
                 ]
             )
     else:
         values = torch.ones_like(subface_sign.mT.flatten())
-    return torch.sparse_coo_tensor(idcs, values, [n_faces, n_subfaces])
+    return torch.sparse_coo_tensor(idcs, values, [n_faces, n_subfaces]).coalesce()
 
 
 def vertex_adjacency_matrix(n_vertices: int, faces: torch.Tensor) -> torch.Tensor:

@@ -1,61 +1,78 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+from typing import Literal
+
 import torch
 
 from iskra.geometry import cotan_weights, cotan_weights_intrinsic, volume_form
-from iskra.geometry.volume import volume_form_intrinsic
+from iskra.geometry.volume import edge_lengths, volume_form_intrinsic
 from iskra.sparse import diag
-from iskra.topology import face_index, incidence_matrix, reduce_on_subface
+from iskra.topology import face_index, get_subfaces, incidence_matrix, reduce_on_subface
 
 
-def d_01(edges: torch.Tensor) -> torch.Tensor:
+def d_01(faces: torch.Tensor) -> torch.Tensor:
+    edges, _, _ = get_subfaces(faces, 1)
     return incidence_matrix(edges, signed=True)
 
 
-def d_10(edges: torch.Tensor) -> torch.Tensor:
-    return d_01(edges).mT
+def d_10(faces: torch.Tensor, bdr_cond: Literal["zero"] = "zero") -> torch.Tensor:
+    edges, _, _ = get_subfaces(faces, 1)
+    derivative = d_01(edges).mT.coalesce()
+    return derivative
 
 
 def d_12(faces: torch.Tensor) -> torch.Tensor:
-    return incidence_matrix(faces, signed=True)
+    triangles, _, _ = get_subfaces(faces, 2)
+    return incidence_matrix(triangles, signed=True)
 
 
 def d_21(faces: torch.Tensor) -> torch.Tensor:
-    return d_21(faces).mT
+    triangles, _, _ = get_subfaces(faces, 2)
+    return d_21(triangles).mT
 
 
 def hodge_0(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     embedded_faces = face_index(vertices, faces)
-    area = volume_form(embedded_faces)
-    vertex_areas = reduce_on_subface(area, faces, vertices.shape[0], "sum") / 3
-    return diag(vertex_areas)
+    volume = volume_form(embedded_faces)
+    n_corners = faces.shape[-1]
+    dual_volume = reduce_on_subface(volume / n_corners, faces, vertices.shape[0], "sum")
+    return diag(dual_volume)
 
 
 def hodge_0_inv(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     embedded_faces = face_index(vertices, faces)
-    area = volume_form(embedded_faces)
-    vertex_areas = reduce_on_subface(area, faces, vertices.shape[0], "sum") / 3
-    return diag(1 / vertex_areas)
+    volume = volume_form(embedded_faces)
+    n_corners = faces.shape[-1]
+    dual_volume = reduce_on_subface(volume / n_corners, faces, vertices.shape[0], "sum")
+    return diag(1 / dual_volume)
 
 
 def hodge_1(
     vertices: torch.Tensor, faces: torch.Tensor, clamp_min: float | None = None
 ) -> torch.Tensor:
-    # TODO(anadodik): should also work for polyline meshes
-    cot = cotan_weights(vertices, faces)
-    if clamp_min is not None:
-        cot = cot.clamp(clamp_min)
-    return diag(cot)
+    if faces.shape[-1] == 2:
+        return diag(1 / edge_lengths(face_index(vertices, faces)))
+    elif faces.shape[-1] == 3:
+        weights = cotan_weights(vertices, faces)
+        if clamp_min is not None:
+            weights = weights.clamp(clamp_min)
+        return diag(weights)
+    else:
+        raise ValueError(f"hodge_1 not implemented for faces.shape={faces.shape}.")
 
 
 def hodge_1_inv(
     vertices: torch.Tensor, faces: torch.Tensor, clamp_min: float | None = None
 ) -> torch.Tensor:
-    # TODO(anadodik): should also work for polyline meshes
-    cot = cotan_weights(vertices, faces)
-    if clamp_min is not None:
-        cot = cot.clamp(clamp_min)
-    return diag(1 / cot)
+    if faces.shape[-1] == 2:
+        return diag(edge_lengths(face_index(vertices, faces)))
+    elif faces.shape[-1] == 3:
+        weights = cotan_weights(vertices, faces)
+        if clamp_min is not None:
+            weights = weights.clamp(clamp_min)
+        return diag(-1 / weights)
+    else:
+        raise ValueError(f"hodge_1_inv not implemented for faces.shape={faces.shape}.")
 
 
 def hodge_2(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
