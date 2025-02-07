@@ -4,20 +4,20 @@ import numpy as np
 import pytest
 import torch
 
-from iskra.geometry import (
-    edge_lengths,
-    tetrahedron_volumes,
-    tetrahedron_volumes_intrinsic,
-    triangle_areas,
-    triangle_areas_intrinsic,
-)
-from iskra.operators.dec import (
+from iskra.dec import (
     hodge_0,
     hodge_0_inv,
     hodge_1,
     hodge_1_inv,
     hodge_2,
     hodge_2_inv,
+)
+from iskra.geometry import (
+    edge_lengths,
+    tetrahedron_volumes,
+    tetrahedron_volumes_intrinsic,
+    triangle_areas,
+    triangle_areas_intrinsic,
 )
 from iskra.topology import face_index, get_subfaces
 
