@@ -45,6 +45,9 @@ nav:
   - Reference: 
     - reference/index.md
     - reference/topology.md
+    - reference/geometry.md
+    - reference/directional.md
+    - reference/operators.md
   - About: about.md
 
 theme:
