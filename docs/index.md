@@ -11,7 +11,7 @@ It's key features are:
 - **CPU or GPU**:
 - **Differentiable**:
 - **Learning-ready**:
-- **Unintrusive**: 
+- **Simple by default, powerful when needed**: 
 - **Didactic**: Designed to be easy to use and learn.
 - **Complete**: for example, we are on pair in functionality with geometry processing powerhouses such as `libigl` and `gptoolbox`, 
 - **Tested**: 
