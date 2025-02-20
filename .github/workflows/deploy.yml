@@ -18,23 +18,17 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Setup Miniconda
-        uses: conda-incubator/setup-miniconda@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
         with:
-          activate-environment: dev
-          environment-file: environment-dev.yaml
-          auto-activate-base: false
+          python-version: "3.x"
 
-      - name: Verify Conda Environment
-        shell: bash -l {0}
+      - name: Install Dependencies
         run: |
-          conda info
-          conda list
+          pip install mkdocs mkdocs-material mkdocstrings mkdocs-material-extensions mkdocs-autolinks-plugin mkdocstrings-python
 
       - name: Build Site
-        shell: bash -l {0}
         run: mkdocs build
 
       - name: Deploy to GitHub Pages
-        shell: bash -l {0}
         run: mkdocs gh-deploy --force
