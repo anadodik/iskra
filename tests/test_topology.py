@@ -95,3 +95,7 @@ def test_connected_components(disconnected: tuple[int, torch.Tensor]):
         vertex_labels, torch.tensor([0, 1, 1, 1, 1, 2]), rtol=0, atol=0
     )
     torch.testing.assert_close(face_labels, torch.tensor([1, 1]), rtol=0, atol=0)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

@@ -178,3 +178,7 @@ def test_point_tetrahedron(tet_x: torch.Tensor, tetrahedra: torch.Tensor) -> Non
         dtype=torch.float32,
     )
     torch.testing.assert_close(tetrahedron_project(tet_x, tetrahedra), expected)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

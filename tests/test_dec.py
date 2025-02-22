@@ -92,3 +92,7 @@ def test_triangles(triangles: tuple[torch.Tensor, torch.Tensor]) -> None:
     expected_hodge_2 = torch.tensor([1 / 2, 1 / 2], device=verts.device)
     torch.testing.assert_close(hodge_2(verts, faces).values(), expected_hodge_2)
     torch.testing.assert_close(hodge_2_inv(verts, faces).values(), 1 / expected_hodge_2)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])

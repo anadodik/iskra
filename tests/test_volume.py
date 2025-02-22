@@ -73,3 +73,7 @@ def test_triangle(triangle: tuple[torch.Tensor, torch.Tensor]) -> None:
     volumes = triangle_areas_intrinsic(lengths, face_to_edge)
 
     torch.testing.assert_close(volumes, expected_volumes)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])
