@@ -11,11 +11,11 @@ dependencies:
   - cuda-nvcc=12.4
   - cuda-runtime=12.4
   - cuda-libraries-dev=12.4
-  - libcublas-dev=12.4  
+  #- libcublas-dev=12.4  
   - cupy
-  - cudnn
-  - cutensor 
-  - nccl
+  #- cudnn
+  #- cutensor 
+  #- nccl
   - conda-forge::ffmpeg
   - pip
   - pip:
