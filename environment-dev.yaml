@@ -2,9 +2,8 @@ name: iskra
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
   - ninja
-  - pip  
+  - pip
   - pip:
       # Linters:
       - ruff

@@ -1,19 +1,23 @@
 name: Unit Tests
 
 on:
-  push:
+  push:    
+    branches:
+      - main      
   workflow_dispatch:
   pull_request:
+    branches:
+      - main
     
 
 jobs:
   test:
-    name: Run Tests on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
+
+    name: Run Tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}   
 
     steps:
       - name: Checkout repository
@@ -22,18 +26,23 @@ jobs:
       - name: Set up Miniconda
         uses: conda-incubator/setup-miniconda@v3
         with:
-          auto-update-conda: true
-          environment-file: environment-dev.yaml
-          activate-environment: test_env
-          miniconda-version: "latest"
+          activate-environment: iskra
+          environment-file: environment.yaml
+          auto-activate-base: false
+
+      - name: Update development environment
+        shell: bash -l {0}
+        run: |
+          conda env update -f environment-dev.yaml
+          conda run -n iskra pip install -e .
+
       - name: Verify Conda Environment
         run: |
-            conda info
-            conda list
-            python --version    
+              conda info
+              conda list
+              python --version 
 
       - name: Run tests
         shell: bash -l {0}
-        run: |
-          conda activate test_env
-          pytest tests/
+        run: |          
+          conda run -n iskra pytest test/
