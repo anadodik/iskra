@@ -24,16 +24,16 @@ jobs:
         with:
           auto-update-conda: true
           environment-file: environment-dev.yaml
-          activate-environment: test_env
-          miniconda-version: "latest"
-      - name: Verify Conda Environment
+          activate-environment: test_env          
+          miniconda-version: "py38_4.8.3"
+          use-mamba: false
+      - name: Verify Conda Environment        
         run: |
             conda info
             conda list
             python --version    
 
-      - name: Run tests
-        shell: bash -l {0}
+      - name: Run tests        
         run: |
           conda activate test_env
           pytest tests/
