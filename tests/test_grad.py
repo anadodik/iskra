@@ -1,75 +1,79 @@
-import numpy as np
 import pytest
 import torch
 
-from iskra.fem import grad
+from iskra.grad import grad
+
+# Taken from https://github.com/sgsellan/gpytoolbox/blob/main/test/test_grad.py
 
 
 def test_grad_polyline() -> None:
-    vertices = torch.tensor([[0], [0.2], [0.5], [0.98], [1.0]])
-
-    edges = torch.stack(
+    V = torch.tensor([[0], [0.2], [0.5], [0.98], [1.0]])
+    E = torch.stack(
         (
-            torch.arange(vertices.shape[0] - 1, dtype=torch.long),
-            torch.arange(1, vertices.shape[0], dtype=torch.long),
+            torch.arange(V.shape[0] - 1, dtype=torch.long),
+            torch.arange(1, V.shape[0], dtype=torch.long),
         ),
         dim=1,
     )
 
-    fun_zero_grad = torch.zeros_like(vertices) + 5
+    fun_zero_grad = torch.zeros_like(V) + 5
+    fun_const_grad = 2 * V
+    fun_other_grad = V**2
+    G = grad(V, E)
 
-    fun_const_grad = 2 * vertices
-    fun_other_grad = vertices**2
+    G_dense = torch.tensor(G.todense(order="C"), dtype=V.dtype)
 
-    g = grad(vertices, edges)
-
-    const_res = g @ fun_zero_grad
     torch.testing.assert_close(
-        const_res,
-        torch.zeros_like(const_res),
+        G_dense @ fun_zero_grad,
+        torch.zeros_like(G_dense @ fun_zero_grad),
         rtol=0,
-        atol=1e-5,
+        atol=0,
     )
 
-    fun_const_res = g @ fun_const_grad
     torch.testing.assert_close(
-        fun_const_res,
-        torch.full_like(fun_const_res, 2.0),
+        G_dense @ fun_const_grad,
+        torch.full_like(G_dense @ fun_const_grad, 2.0),
         rtol=0,
-        atol=1e-5,
+        atol=1e-6,
     )
 
-    edge_centers = 0.5 * (vertices[:-1, :] + vertices[1:, :])
-    fun_grad_res = g @ fun_other_grad
-    torch.testing.assert_close(fun_grad_res, 2.0 * edge_centers, rtol=0, atol=1e-5)
+    edge_centers = (V[:-1, :] + V[1:, :]) / 2.0
+
+    torch.testing.assert_close(
+        G_dense @ fun_other_grad, 2.0 * edge_centers, rtol=0, atol=1e-6
+    )
 
 
 def test_grad_2d_triangle() -> None:
-    vertices = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
-    faces = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    V = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+    F = torch.tensor([[0, 1, 2]], dtype=torch.long)
 
-    gx, gy = grad(vertices, faces)
+    G = grad(V, F)
 
-    g = torch.cat([gx.to_dense(), gy.to_dense()], dim=0)
+    G_dense = torch.tensor(G.todense(), dtype=V.dtype)
 
-    gt = torch.tensor([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]], dtype=vertices.dtype)
+    G_gt = torch.tensor([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]], dtype=V.dtype)
 
-    torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)
+    torch.testing.assert_close(G_dense, G_gt, rtol=0, atol=1e-6)
 
 
 def test_grad_3d_triangle() -> None:
-    vertices = torch.tensor(
+    V = torch.tensor(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32
     )
 
-    faces = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    F = torch.tensor([[0, 1, 2]], dtype=torch.long)
 
-    gx, gy, gz = grad(vertices, faces)
+    G = grad(V, F)
 
-    g = torch.cat([gx.to_dense(), gy.to_dense(), gz.to_dense()], dim=0)
-
-    gt = torch.tensor(
-        [[-1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 1.0]], dtype=vertices.dtype
+    G_gt = torch.tensor(
+        [[-1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 1.0]], dtype=V.dtype
     )
 
-    torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)
+    G_dense = torch.tensor(G.todense(), dtype=V.dtype)
+
+    torch.testing.assert_close(G_dense, G_gt, rtol=0, atol=1e-6)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])
