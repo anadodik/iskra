@@ -17,18 +17,13 @@ import torch
 from iskra.geometry import BBox, triangle_area_normals, triangle_areas
 from iskra.io import load
 from iskra.logging.logging import getLogger
-from iskra.topology import (
-    boundary,
-    face_index,
-    face_scatter_reduce,
-    get_subfaces,
-)
+from iskra.topology import boundary, face_index, face_scatter_reduce, get_subfaces
 
 LOGGER = getLogger(__name__)
 LOGGER.setLevel("INFO")
 
 
-class MeshTopology(torch.nn.Module):
+class Topology(torch.nn.Module):
     def __init__(
         self,
         faces: torch.Tensor,
@@ -72,7 +67,7 @@ class MeshTopology(torch.nn.Module):
         elif dim > self.intrinsic_dim:
             return torch.zeros([0, dim + 1], device=self.faces.device, dtype=torch.long)
 
-        subfaces = subfaces(self.faces, dim)
+        subfaces = get_subfaces(self.faces, dim)
         subfaces = torch.flatten(subfaces, -3, -2)
         subfaces = torch.sort(subfaces, -1)[0]
         subfaces = torch.unique(subfaces, dim=-2)
@@ -86,7 +81,7 @@ class MeshTopology(torch.nn.Module):
         if subface_dim < 0:
             subface_dim = self.intrinsic_dim + subface_dim
 
-        subfaces = subfaces(faces, subface_dim)
+        subfaces = get_subfaces(faces, subface_dim)
         n_subfaces = subfaces.shape[-2]
         subfaces = torch.flatten(subfaces, -3, -2)
         subfaces = torch.sort(subfaces, -1)[0]
@@ -114,8 +109,8 @@ class MeshTopology(torch.nn.Module):
         return self.vertices[mask]
 
 
-class MeshGeometry(torch.nn.Module):
-    def __init__(self, topology: MeshTopology, vertices: torch.Tensor) -> None:
+class Geometry(torch.nn.Module):
+    def __init__(self, topology: Topology, vertices: torch.Tensor) -> None:
         super().__init__()
 
         self.topology = topology
@@ -148,8 +143,6 @@ class MeshGeometry(torch.nn.Module):
     def __getitem__(self, faces: torch.Tensor) -> torch.Tensor:
         if isinstance(faces, torch.Tensor):
             return face_index(self.vertices, faces)
-        elif isinstance(faces, Index):
-            return faces.index_into(self.vertices, 0, self.topology)
         else:
             return self.vertices[faces]
 
@@ -240,18 +233,18 @@ class MeshGeometry(torch.nn.Module):
 class Mesh(torch.nn.Module):
     def __init__(
         self,
-        topology: torch.Tensor | MeshTopology,
-        geometry: torch.Tensor | MeshGeometry,
+        topology: torch.Tensor | Topology,
+        geometry: torch.Tensor | Geometry,
     ) -> None:
         super().__init__()
         if isinstance(topology, torch.Tensor):
-            topology = MeshTopology(topology)
+            topology = Topology(topology)
         if isinstance(geometry, torch.Tensor):
-            geometry = MeshGeometry(topology, geometry)
+            geometry = Geometry(topology, geometry)
         self.topo = topology
         self.geom = geometry
 
-    def __iter__(self) -> Iterator[MeshTopology | MeshGeometry]:
+    def __iter__(self) -> Iterator[Topology | Geometry]:
         return iter([self.topo, self.geom])
 
     @property
@@ -311,8 +304,8 @@ class Mesh(torch.nn.Module):
         #   inv_idx.scatter_(0, vertex_idcs, new_vertex_idcs)
         #   faces = torch.gather(inv_idx, 0, edges.flatten()).reshape(-1, 2)
 
-        topology = MeshTopology(faces)
-        geometry = MeshGeometry(topology, vertices)
+        topology = Topology(faces)
+        geometry = Geometry(topology, vertices)
         mesh = Mesh(topology, geometry)
 
         if return_index:
@@ -330,8 +323,8 @@ class Mesh(torch.nn.Module):
         return_material_ids: bool = False,
     ) -> Self | tuple[Self, torch.Tensor]:
         faces, vertices, uvs, normals, material_ids = load(str(path), device=device)
-        topology = MeshTopology(faces, vertices.shape[0])
-        geometry = MeshGeometry(topology, vertices)
+        topology = Topology(faces, vertices.shape[0])
+        geometry = Geometry(topology, vertices)
 
         mesh = Mesh(topology, geometry)
         if normals is not None and normals.shape[0] == mesh.geom.n_vertices:

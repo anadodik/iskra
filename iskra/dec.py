@@ -1,7 +1,5 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
-from typing import Literal
-
 import torch
 
 from iskra.geometry import cotan_weights, cotan_weights_intrinsic, volume_form
@@ -15,7 +13,7 @@ def d_01(faces: torch.Tensor) -> torch.Tensor:
     return incidence_matrix(edges, signed=True)
 
 
-def d_10(faces: torch.Tensor, bdr_cond: Literal["zero"] = "zero") -> torch.Tensor:
+def d_10(faces: torch.Tensor) -> torch.Tensor:
     edges, _, _ = get_subfaces(faces, 1)
     derivative = d_01(edges).mT.coalesce()
     return derivative
@@ -28,20 +26,18 @@ def d_12(faces: torch.Tensor) -> torch.Tensor:
 
 def d_21(faces: torch.Tensor) -> torch.Tensor:
     triangles, _, _ = get_subfaces(faces, 2)
-    return d_21(triangles).mT
+    return d_12(triangles).mT
 
 
 def hodge_0(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    embedded_faces = face_index(vertices, faces)
-    volume = volume_form(embedded_faces)
+    volume = volume_form(face_index(vertices, faces))
     n_corners = faces.shape[-1]
     dual_volume = reduce_on_subface(volume / n_corners, faces, vertices.shape[0], "sum")
     return diag(dual_volume)
 
 
 def hodge_0_inv(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    embedded_faces = face_index(vertices, faces)
-    volume = volume_form(embedded_faces)
+    volume = volume_form(face_index(vertices, faces))
     n_corners = faces.shape[-1]
     dual_volume = reduce_on_subface(volume / n_corners, faces, vertices.shape[0], "sum")
     return diag(1 / dual_volume)
@@ -97,23 +93,25 @@ def laplacian(
 
 def hodge_0_intrinsic(
     edge_lengths: torch.Tensor,
+    faces: torch.Tensor,
     face_to_edge: torch.Tensor,
     n_vertices: int,
-    faces: torch.Tensor,
 ) -> torch.Tensor:
     area = volume_form_intrinsic(edge_lengths, face_to_edge)
-    vertex_areas = reduce_on_subface(area, faces, n_vertices, "sum") / 3
+    n_corners = faces.shape[-1]
+    vertex_areas = reduce_on_subface(area / n_corners, faces, n_vertices, "sum")
     return diag(vertex_areas)
 
 
 def hodge_0_intrinsic_inv(
     edge_lengths: torch.Tensor,
+    faces: torch.Tensor,
     face_to_edge: torch.Tensor,
     n_vertices: int,
-    faces: torch.Tensor,
 ) -> torch.Tensor:
     area = volume_form_intrinsic(edge_lengths, face_to_edge)
-    vertex_areas = reduce_on_subface(area, faces, n_vertices, "sum") / 3
+    n_corners = faces.shape[-1]
+    vertex_areas = reduce_on_subface(area / n_corners, faces, n_vertices, "sum")
     return diag(1 / vertex_areas)
 
 

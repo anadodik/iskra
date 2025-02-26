@@ -44,11 +44,11 @@ def torch_to_scipy(x: torch.Tensor) -> torch.Tensor:
     x_scipy = scipy.sparse.coo_array((data, (idcs[0], idcs[1])), shape=x.shape)
     return x_scipy
 
+
 _INDEX_TYPE = slice | int | torch.Tensor | tuple[int, ...]
 
-def _build_index_selection_mask(
-    x: torch.Tensor, *indices: _INDEX_TYPE
-) -> torch.Tensor:
+
+def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
     assert x.layout == torch.sparse_coo
     new_shape = list(x.shape)
     mask = torch.ones(x.indices().shape[-1], device=x.device, dtype=torch.bool)
@@ -87,7 +87,7 @@ def get_slice(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
     mask, new_shape = _build_index_selection_mask(x, *indices)
     selected_idx = x._indices()[:, mask]
     selected_val = x._values()[mask]
-    
+
     for dim, idx in enumerate(indices):
         match idx:
             case None:
@@ -98,7 +98,7 @@ def get_slice(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
                 idx_map = torch.empty(x.shape[dim], dtype=torch.long, device=x.device)
                 idx_map[idx] = torch.arange(new_shape[dim], device=idx.device)
                 selected_idx[dim, :] = idx_map[selected_idx[dim, :]]
-    
+
     return torch.sparse_coo_tensor(
         selected_idx,
         selected_val,
@@ -204,6 +204,8 @@ def min_quadratic_energy(
             "rhs must have the same number of dim and same last dim as known_values. "
             f"rhs.shape = {rhs.shape}, known_values.shape = {known_values.shape}."
         )
+    if not system.is_coalesced():
+        system = system.coalesce()
     n_rows = system.shape[0]
     unknown_mask = torch.ones([n_rows], dtype=torch.bool, device=known_idx.device)
     unknown_mask[known_idx] = False
@@ -212,7 +214,7 @@ def min_quadratic_energy(
     system_uk = get_slice(system, unknown_idx, known_idx)
     rhs_u = rhs[unknown_idx, ...]
     new_rhs = rhs_u - system_uk @ known_values
-    
+
     solver = CholeskySolver(system_uu)
     unknown = solver.solve(new_rhs)
     result = torch.zeros_like(rhs)
