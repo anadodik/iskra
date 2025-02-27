@@ -14,6 +14,7 @@ dependencies:
       - isort
       - types-requests
       - nvtx
+      # Visualization
       - matplotlib
       - jupyterlab
       - ipywidgets
@@ -31,8 +32,8 @@ dependencies:
       - mkdocs-autorefs
       - griffe_typingdoc
       # Deployment
-      - nanobind==1.4.0
-      - scikit-build-core==0.5.1
+      - nanobind>=2.5.0
+      - scikit-build-core>=0.10.7
       - pyproject-metadata
       - setuptools
       - twine>=1.11.0

@@ -34,7 +34,7 @@ Lastly, if you plan on contributing, you will also need the development dependen
 This can be done by running the following:
 ```
 conda env update -f environment-dev.yaml
-pip install -e .
+pip install --no-build-isolation -Ceditable.rebuild=true -ve .
 ```
 
 ### Development Plan
