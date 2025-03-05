@@ -25,7 +25,7 @@ def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int
         list[tuple[int, ...]]: _description_
     """
     if subface_dim < 0:
-        subface_dim = face_dim - subface_dim
+        subface_dim = face_dim + subface_dim
     idcs: list[tuple[int, ...]]
     if face_dim == 3 and subface_dim == 2:
         idcs = [(1, 2, 3), (0, 3, 2), (0, 1, 3), (0, 2, 1)]
@@ -114,14 +114,53 @@ def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
     return subfaces, face_to_subface, subface_sign
 
 
-def incidence_matrix(
-    faces: torch.Tensor, subface_dim: int = -1, signed: bool = False
-) -> torch.Tensor:
-    device = faces.device
-    n_faces, face_dim = faces.shape[0], faces.shape[-1] - 1
+def edge_flaps(faces: torch.Tensor) -> torch.Tensor:
+    """Returns a tensor denoting the right and left faces of an edge.
 
-    subfaces, face_to_subface, subface_sign = get_subfaces(faces, subface_dim)
-    n_subfaces = subfaces.shape[0]
+    Args:
+        faces (torch.Tensor): An `[F, 3]` tensor with triangle faces.
+
+    Returns:
+        torch.Tensor: An `[E, 2]` tensor, where E is the number of
+            unique edges in the mesh. `edge_flaps[:, 0]` is the index of the left face
+            and `edge_flaps[:, 1]` the index of the right face of the mesh. If an edge
+            is a boundary edge and only has a triangle on one of its sides,
+            the other side will be equal to -1.
+    """
+    device = faces.device
+
+    idcs: list[tuple[int, ...]] = face_to_subface_idcs(2, 1)
+    subsimplex_list = [faces[:, nbh_idx] for nbh_idx in idcs]
+    face_half_edge_vert = torch.stack(subsimplex_list, -2)
+
+    edges = torch.flatten(face_half_edge_vert, -3, -2)
+    edges, _ = torch.sort(edges, -1)
+
+    face_edge_vert = edges.reshape(face_half_edge_vert.shape)
+    same = (face_half_edge_vert == face_edge_vert).all(-1)  # F x 3
+    flipped = (face_half_edge_vert == torch.flip(face_edge_vert, (-1,))).all(-1)
+
+    edges, face_edge = torch.unique(edges, dim=-2, return_inverse=True)
+    face_edge = face_edge.reshape(-1, 3)
+
+    edge_flaps = torch.full([edges.shape[0], 2], -1, device=device)
+
+    face_idcs = torch.arange(faces.shape[0], device=device)
+    for v_i in range(3):
+        edge_flaps[face_edge[same[:, v_i], v_i], 0] = face_idcs[same[:, v_i]]
+        edge_flaps[face_edge[flipped[:, v_i], v_i], 1] = face_idcs[flipped[:, v_i]]
+    return edge_flaps
+
+
+def assemble_incidence_matrix(
+    n_faces: int,
+    face_dim: int,
+    n_subfaces: int,
+    face_to_subface: torch.Tensor,
+    subface_sign: torch.Tensor,
+    signed: bool = False,
+) -> torch.Tensor:
+    device = face_to_subface.device
     n_subfaces_per_face = face_to_subface.shape[-1]
     i = torch.cat(n_subfaces_per_face * [torch.arange(n_faces, device=device)])
     j = face_to_subface.mT.flatten()
@@ -138,6 +177,22 @@ def incidence_matrix(
     else:
         values = torch.ones_like(subface_sign.mT.flatten())
     return torch.sparse_coo_tensor(idcs, values, [n_faces, n_subfaces]).coalesce()
+
+
+def incidence_matrix(
+    faces: torch.Tensor, subface_dim: int = -1, signed: bool = False
+) -> torch.Tensor:
+    n_faces, face_dim = faces.shape[0], faces.shape[-1] - 1
+
+    subfaces, face_to_subface, subface_sign = get_subfaces(faces, subface_dim)
+    return assemble_incidence_matrix(
+        n_faces,
+        face_dim,
+        subfaces.shape[0],
+        face_to_subface,
+        subface_sign,
+        signed=signed,
+    )
 
 
 def vertex_adjacency_matrix(n_vertices: int, faces: torch.Tensor) -> torch.Tensor:

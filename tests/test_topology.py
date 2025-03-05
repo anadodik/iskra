@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 import torch
 
-from iskra.topology import connected_components, get_subfaces, incidence_matrix
+from iskra.topology import (
+    connected_components,
+    edge_flaps,
+    get_subfaces,
+    incidence_matrix,
+)
 
 
 @pytest.fixture
@@ -72,6 +77,12 @@ def test_triangles_subfaces(triangles: torch.Tensor) -> None:
     torch.testing.assert_close(
         face_to_edge_sign, face_to_edge_sign_expected, rtol=0, atol=0
     )
+
+
+def test_edge_flaps(triangles: torch.Tensor) -> None:
+    flaps = edge_flaps(triangles)
+    flaps_expected = torch.tensor([[0, -1], [-1, 0], [0, 1], [1, -1], [-1, 1]])
+    torch.testing.assert_close(flaps, flaps_expected, rtol=0, atol=0)
 
 
 def test_edges_subfaces(edges: torch.Tensor) -> None:
