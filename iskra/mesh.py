@@ -17,7 +17,7 @@ import torch
 from iskra.geometry import BBox, triangle_area_normals, triangle_areas
 from iskra.io import load
 from iskra.logging.logging import getLogger
-from iskra.topology import boundary, face_index, face_scatter_reduce, get_subfaces
+from iskra.topology import boundary, face_index, get_subfaces, reduce_on_subface
 
 LOGGER = getLogger(__name__)
 LOGGER.setLevel("INFO")
@@ -113,7 +113,7 @@ class Geometry(torch.nn.Module):
     def __init__(self, topology: Topology, vertices: torch.Tensor) -> None:
         super().__init__()
 
-        self.topology = topology
+        self.topo = topology
 
         self.register_buffer("vertices", vertices)
         self._vertex_normals = None
@@ -148,10 +148,10 @@ class Geometry(torch.nn.Module):
 
     @property
     def faces(self) -> torch.Tensor:
-        return face_index(self.vertices, self.topology.faces)
+        return face_index(self.vertices, self.topo.faces)
 
     def subfaces(self, dim: int = -1) -> torch.Tensor:
-        return face_index(self.vertices, self.topology.subfaces(dim))
+        return face_index(self.vertices, self.topo.subfaces(dim))
 
     @property
     def tetrahedra(self) -> torch.Tensor:
@@ -167,18 +167,18 @@ class Geometry(torch.nn.Module):
 
     @property
     def isolated_vertices(self) -> torch.Tensor:
-        return face_index(self.vertices, self.topology.isolated_vertices)
+        return face_index(self.vertices, self.topo.isolated_vertices)
 
     @property
     def area_face_normals(self) -> torch.Tensor:
-        if self.topology.intrinsic_dim == 2 and self.ambient_dim in (2, 3):
+        if self.topo.intrinsic_dim == 2 and self.ambient_dim in (2, 3):
             return triangle_area_normals(self.faces)
-        elif self.topology.intrinsic_dim == 1 and self.ambient_dim == 2:
+        elif self.topo.intrinsic_dim == 1 and self.ambient_dim == 2:
             return edge_length_normals(self.faces)
         else:
             raise NotImplementedError(
                 f"Normals not implemented for "
-                f"intrinsic_dim={self.topology.intrinsic_dim} "
+                f"intrinsic_dim={self.topo.intrinsic_dim} "
                 f"and ambient_dim={self.ambient_dim}"
             )
 
@@ -194,9 +194,9 @@ class Geometry(torch.nn.Module):
         # )
         # return torch.nn.functional.normalize(normals, dim=-1)
         if self._vertex_normals is None:
-            normals = face_scatter_reduce(
+            normals = reduce_on_subface(
                 self.area_face_normals,
-                self.topology.faces,
+                self.topo.faces,
                 self.vertices.shape[0],
             )
             return torch.nn.functional.normalize(normals, dim=-1)
@@ -209,23 +209,23 @@ class Geometry(torch.nn.Module):
 
     @property
     def face_areas(self) -> torch.Tensor:
-        if self.topology.intrinsic_dim == 1:
+        if self.topo.intrinsic_dim == 1:
             return edge_lengths(self.faces)
-        elif self.topology.intrinsic_dim == 2 and self.ambient_dim in (2, 3):
+        elif self.topo.intrinsic_dim == 2 and self.ambient_dim in (2, 3):
             return triangle_areas(self.triangles)
-        elif self.topology.intrinsic_dim == 3:
+        elif self.topo.intrinsic_dim == 3:
             return tetrahedron_volumes(self.faces)
         else:
             raise NotImplementedError(
                 f"Normals not implemented for "
-                f"intrinsic_dim={self.topology.intrinsic_dim} "
+                f"intrinsic_dim={self.topo.intrinsic_dim} "
                 f"and ambient_dim={self.ambient_dim}"
             )
 
     @property
     def vertex_areas(self) -> torch.Tensor:
-        triple_area = face_scatter_reduce(
-            self.face_areas, self.topology.faces, self.topology.n_vertices
+        triple_area = reduce_on_subface(
+            self.face_areas, self.topo.faces, self.topo.n_vertices
         )
         return triple_area / 3
 
