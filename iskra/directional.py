@@ -4,6 +4,8 @@ import torch
 
 from iskra.geometry import normal_coordinate_system
 from iskra.geometry.normals import triangle_normals
+from iskra.geometry.volume import edge_lengths, triangle_areas
+from iskra.sparse import diag
 from iskra.topology import face_index, get_subfaces
 
 
@@ -125,6 +127,9 @@ def face_tangent_bundle(
         torch.Tensor: `[F, 3]` tensor of face binormals, where F is the number of faces.
         torch.Tensor: `[E]` complex tensor with the discrete Levi-Civita connection that
             transports vectors from face `edge_flaps[:, 0]` to face `edge_flaps[:, 1]`.
+        torch.Tensor: `[E, 2]` complex tensor with the the projection that takes vectors
+            in the dual edge tangent space and transports them into the tangent space of
+            `edge_flaps[:, 0]`, resp. `edge_flaps[:, 1]`.
     """
     device = vertices.device
 
@@ -133,29 +138,33 @@ def face_tangent_bundle(
     face_normals = triangle_normals(triangles)
     tangents, binormals = normal_coordinate_system(face_normals)
 
-    # Compute the connection between neighboring faces:
+    # Use the edge vector to compute mutual basis for neighboring faces:
     edges, _, _ = get_subfaces(faces)
-    connection = torch.zeros([edges.shape[0]], dtype=torch.cfloat, device=device)
-
     line_segments = face_index(vertices, edges)
     edge_vectors = line_segments[..., 1, :] - line_segments[..., 0, :]
     edge_vectors = torch.nn.functional.normalize(edge_vectors, p=2, dim=-1)
 
+    connection = torch.zeros([edges.shape[0]], dtype=torch.cfloat, device=device)
+    edge_proj = torch.zeros([edges.shape[0], 2], dtype=torch.cfloat, device=device)
+
     # Represent non-boundary edges in the tangent bases of its neighboring faces:
     is_flap = (edge_flaps[:, 0] != -1) & (edge_flaps[:, 1] != -1)
-    left_edge_proj = to_intrinsic(
+    edge_proj_0 = to_intrinsic(
         edge_vectors[is_flap],
         tangents[edge_flaps[is_flap, 0]],
         binormals[edge_flaps[is_flap, 0]],
     )
-    right_edge_proj = to_intrinsic(
+    edge_proj_1 = to_intrinsic(
         edge_vectors[is_flap],
         tangents[edge_flaps[is_flap, 1]],
         binormals[edge_flaps[is_flap, 1]],
     )
-    connection[is_flap] = right_edge_proj.conj() * left_edge_proj
 
-    return tangents, binormals, connection
+    # Compute the connection between neighboring faces:
+    edge_proj[is_flap] = torch.stack([edge_proj_0, edge_proj_1], -1)
+    connection[is_flap] = edge_proj_0 * edge_proj_1.conj()
+
+    return tangents, binormals, connection, edge_proj
 
 
 def transport_from_face(
@@ -172,17 +181,17 @@ def transport_from_face(
         source (int): Index of source face.
         intrinsic (complex | torch.Tensor): Vector to be transported
             in a complex representation. Use `to_intrinsic` to project
-        extrinsic vectors to intrinsic ones.
+            extrinsic vectors to intrinsic ones.
         n_faces (int): Number of faces in the mesh.
         flaps (torch.Tensor): `[E, 2]` tensor specifying the edge-to-face
             connectivity in the mesh. See `iskra.edge_flaps`.
-        connection (torch.Tensor): Discrete connection. You can use
-            `face_tangent_bundle` to obtain a connection from a mesh.
+        connection (torch.Tensor): '[E]` tensor specifying the discrete connection.
+            You can use `face_tangent_bundle` to obtain a connection from a mesh.
         n (int): The degree of symmetry of the N-RoSy field.
             Is simply 1 for vector fields.
 
     Returns:
-        torch.Tensor: `[F]` complex tensor containing the transported vectors.
+        torch.Tensor: `[F]` complex tensor with the transported vectors.
     """
     connection = connection**n
     transported = torch.zeros(
@@ -203,3 +212,81 @@ def transport_from_face(
     transported[rl_target_face] = transported_rl
     transported[lr_target_face] = transported_lr
     return transported
+
+
+def face_connection_d_01(
+    n_faces: int, flaps: torch.Tensor, connection: torch.Tensor
+) -> torch.Tensor:
+    """Construct the face-based connection differetial for an N-RoSy field.
+
+    Args:
+        n_faces (int): Number of faces in the mesh.
+        flaps (torch.Tensor): `[E, 2]` tensor specifying the edge-to-face
+            connectivity in the mesh. See `iskra.edge_flaps`.
+        connection (torch.Tensor): '[E]` tensor specifying the discrete connection.
+            You can use `face_tangent_bundle` to obtain a connection from a mesh.
+
+    Returns:
+        torch.Tensor: `[E, F]` complex tensor of the face-based connection differetial.
+    """
+    is_flap = (flaps[:, 0] != -1) & (flaps[:, 1] != -1)
+    int_flaps = flaps[is_flap]
+    int_conn = connection[is_flap]
+
+    i = torch.cat(2 * [is_flap.nonzero().flatten()])
+    j = torch.cat([int_flaps[:, 0], int_flaps[:, 1]])
+    idcs = torch.stack([i, j])
+    values = torch.cat([torch.full_like(int_conn, -1), int_conn])
+
+    d_01 = torch.sparse_coo_tensor(idcs, values, size=[flaps.shape[0], n_faces])
+    return d_01.coalesce()
+
+
+def face_connection_mass(
+    verts: torch.Tensor, edges: torch.Tensor, faces: torch.Tensor, flaps: torch.Tensor
+) -> torch.Tensor:
+    """Construct the face-based connection mass matrix for an N-RoSy field.
+
+    Args:
+        verts (torch.Tensor): `[V, 3]` tensor of mesh vertices.
+        faces (torch.Tensor): `[E, 2]` tensor of mesh edges.
+        faces (torch.Tensor): `[F, 2]` tensor of mesh faces.
+        flaps (torch.Tensor): `[E, 2]` tensor specifying the edge-to-face
+            connectivity in the mesh. See `iskra.edge_flaps`.
+
+    Returns:
+        torch.Tensor: `[F, F]` complex mass matrix for a face-based N-RoSy field.
+    """
+    lengths = edge_lengths(face_index(verts, edges))
+    areas = triangle_areas(face_index(verts, faces))
+    areas_0 = torch.where(flaps[:, 0] != -1, areas[flaps[:, 0]], 0)
+    areas_1 = torch.where(flaps[:, 1] != -1, areas[flaps[:, 1]], 0)
+    mass = 3 * lengths / (areas_0 + areas_1)
+    mass = diag(mass.to(dtype=torch.cfloat))
+    return mass
+
+
+def face_connection_laplacian(
+    verts: torch.Tensor,
+    faces: torch.Tensor,
+    flaps: torch.Tensor,
+    connection: torch.Tensor,
+) -> torch.Tensor:
+    """Construct the face-based connection laplacian for an N-RoSy field.
+
+    Args:
+        verts (torch.Tensor): `[V, 3]` tensor of mesh vertices.
+        faces (torch.Tensor): `[F, 2]` tensor of mesh faces.
+        flaps (torch.Tensor): `[E, 2]` tensor specifying the edge-to-face
+            connectivity in the mesh. See `iskra.edge_flaps`.
+        connection (torch.Tensor): Discrete connection. You can use
+            `face_tangent_bundle` to obtain a connection from a mesh.
+
+    Returns:
+        torch.Tensor: `[F, F]` complex tensor of the face-based connection Laplacian.
+    """
+    edges, _, _ = get_subfaces(faces)
+    mass = face_connection_mass(verts, edges, faces, flaps)
+    d_01 = face_connection_d_01(faces.shape[0], flaps, connection)
+    laplacian = d_01.mT @ mass @ d_01
+    return laplacian
