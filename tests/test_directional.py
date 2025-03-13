@@ -1,7 +1,6 @@
 # Copyright (c) 2023 - present, Ana Dodik. All rights reserved.
 
 
-import numpy as np
 import pytest
 import torch
 
