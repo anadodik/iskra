@@ -73,8 +73,13 @@ def grad_triangle_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tenso
     device = vertices.device
 
     triangles = face_index(vertices, faces)
+<<<<<<< HEAD
     edge_01 = triangles[:, 1, :] - triangles[:, 0, :]
     edge_20 = triangles[:, 0, :] - triangles[:, 2, :]
+=======
+    edge_21 = triangles[:, 1, :] - triangles[:, 0, :]
+    edge_13 = triangles[:, 0, :] - triangles[:, 2, :]
+>>>>>>> f51c916 (fix grad function. now passing the unit test on 3d triangle)
 
     face_normals = torch.linalg.cross(edge_01, -edge_20)
     double_face_areas = torch.linalg.vector_norm(face_normals, dim=-1, keepdim=True)
