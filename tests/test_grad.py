@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from iskra.grad import grad
+from iskra.fem import grad
 
 # Taken from https://github.com/sgsellan/gpytoolbox/blob/main/test/test_grad.py
 
@@ -58,21 +58,23 @@ def test_grad_2d_triangle() -> None:
 
 
 def test_grad_3d_triangle() -> None:
-    V = torch.tensor(
+    vertices = torch.tensor(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32
     )
 
-    F = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    faces = torch.tensor([[0, 1, 2]], dtype=torch.long)
 
-    G = grad(V, F)
+    gx, gy, gz = grad(vertices, faces)
 
-    G_gt = torch.tensor(
-        [[-1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 1.0]], dtype=V.dtype
+    g = torch.cat([gx.to_dense(), gy.to_dense(), gz.to_dense()], dim=0)
+
+    print(g.shape)
+
+    gt = torch.tensor(
+        [[-1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 1.0]], dtype=vertices.dtype
     )
 
-    G_dense = torch.tensor(G.todense(), dtype=V.dtype)
-
-    torch.testing.assert_close(G_dense, G_gt, rtol=0, atol=1e-6)
+    torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)
 
 
 if __name__ == "__main__":

@@ -58,8 +58,8 @@ def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     device = vertices.device
 
     triangles = face_index(vertices, faces)
-    edge_21 = triangles[:, 2, :] - triangles[:, 0, :]
-    edge_13 = triangles[:, 1, :] - triangles[:, 0, :]
+    edge_21 = triangles[:, 1, :] - triangles[:, 0, :]
+    edge_13 = triangles[:, 0, :] - triangles[:, 2, :]
 
     face_normals = torch.linalg.cross(edge_21, -edge_13)
     double_face_areas = torch.linalg.vector_norm(face_normals, dim=-1, keepdim=True)
