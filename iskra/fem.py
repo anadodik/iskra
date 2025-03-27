@@ -4,7 +4,7 @@ from typing import Literal
 
 import torch
 
-from iskra.geometry.volume import volume_form, volume_form_intrinsic
+from iskra.geometry.volume import edge_lengths, volume_form, volume_form_intrinsic
 from iskra.sparse import diag
 from iskra.topology import face_index, reduce_on_subface
 
@@ -121,7 +121,54 @@ def grad_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     return grad_x, grad_y
 
 
+def grad_1d(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
+    if edges.shape[-1] != 2:
+        raise ValueError("grad_1d() implemented only for edges only.")
+
+    if vertices.shape[-1] != 3:
+        raise ValueError("grad_1d() vertices must be in 3D")
+
+    edge_len = edge_lengths(
+        torch.stack((vertices[edges[:, 1], :], vertices[edges[:, 0], :]), dim=1)
+    )
+
+    n_vertices = vertices.shape[0]
+    n_faces = edges.shape[0]
+    device = vertices.device
+
+    idx_i = torch.arange(edges.shape[0], dtype=torch.long, device=device)
+    idx_i = torch.cat((idx_i, idx_i))
+    idx_j = torch.cat((edges[:, 0], edges[:, 1]))
+    idx = torch.stack([idx_i, idx_j])
+
+    grad_x = torch.sparse_coo_tensor(
+        idx,
+        torch.cat(
+            [-vertices[edges[:, 1], 0] / edge_len, vertices[edges[:, 0], 0] / edge_len]
+        ),
+        size=[n_faces, n_vertices],
+    )
+    grad_y = torch.sparse_coo_tensor(
+        idx,
+        torch.cat(
+            [-vertices[edges[:, 1], 1] / edge_len, vertices[edges[:, 0], 1] / edge_len]
+        ),
+        size=[n_faces, n_vertices],
+    )
+    grad_z = torch.sparse_coo_tensor(
+        idx,
+        torch.cat(
+            [-vertices[edges[:, 1], 2] / edge_len, vertices[edges[:, 0], 2] / edge_len]
+        ),
+        size=[n_faces, n_vertices],
+    )
+
+    return grad_x, grad_y, grad_z
+
+
 def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    if faces.shape[-1] == 2:
+        return grad_1d(vertices, faces)
     if vertices.shape[-1] == 2:
         return grad_2d(vertices, faces)
     elif vertices.shape[-1] == 3:
