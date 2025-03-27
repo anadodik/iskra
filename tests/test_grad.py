@@ -45,16 +45,16 @@ def test_grad_polyline() -> None:
 
 
 def test_grad_2d_triangle() -> None:
-    V = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
-    F = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    vertices = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+    faces = torch.tensor([[0, 1, 2]], dtype=torch.long)
 
-    G = grad(V, F)
+    gx, gy = grad(vertices, faces)
 
-    G_dense = torch.tensor(G.todense(), dtype=V.dtype)
+    g = torch.cat([gx.to_dense(), gy.to_dense()], dim=0)
 
-    G_gt = torch.tensor([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]], dtype=V.dtype)
+    gt = torch.tensor([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]], dtype=vertices.dtype)
 
-    torch.testing.assert_close(G_dense, G_gt, rtol=0, atol=1e-6)
+    torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)
 
 
 def test_grad_3d_triangle() -> None:
@@ -67,8 +67,6 @@ def test_grad_3d_triangle() -> None:
     gx, gy, gz = grad(vertices, faces)
 
     g = torch.cat([gx.to_dense(), gy.to_dense(), gz.to_dense()], dim=0)
-
-    print(g.shape)
 
     gt = torch.tensor(
         [[-1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 1.0]], dtype=vertices.dtype

@@ -49,9 +49,11 @@ def mass_intrinsic_inv(
     return diag(1 / vertex_areas)
 
 
-def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+def grad_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     if faces.shape[-1] != 3:
-        raise ValueError("Grad implemented only for triangle meshes.")
+        raise ValueError("grad_3d() implemented only for triangle meshes.")
+    if vertices.shape[-1] != 3:
+        raise ValueError("grad_3d() implemented only for triangle meshes in 3d")
     # TODO(anadodik): make it into a batched [3, n_faces, n_vertices] tensor.
     n_vertices = vertices.shape[0]
     n_faces = faces.shape[0]
@@ -77,6 +79,53 @@ def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
     grad_z = torch.sparse_coo_tensor(idx, values[:, 2], size=[n_faces, n_vertices])
     return grad_x, grad_y, grad_z
+
+
+def grad_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    if faces.shape[-1] != 3:
+        raise ValueError("grad_2d() implemented only for triangle meshes.")
+    if vertices.shape[-1] != 2:
+        raise ValueError("grad_2d() implemented only for triangle meshes in 2d")
+
+    n_vertices = vertices.shape[0]
+    n_faces = faces.shape[0]
+    device = vertices.device
+
+    triangles = face_index(vertices, faces)
+
+    edge_21 = triangles[:, 1, :] - triangles[:, 0, :]
+    edge_13 = triangles[:, 0, :] - triangles[:, 2, :]
+
+    # signed triangle areas
+    double_face_areas = 0.5 * (
+        edge_21[:, 1] * edge_13[:, 0] - edge_21[:, 0] * edge_13[:, 1]
+    )
+
+    # Rotate edge vectors by 90 degrees and normalize by area
+    # In 2D, rotating by 90 degrees is done by (x, y) -> (-y, x)
+    rot_edge_21 = torch.stack([-edge_21[:, 1], edge_21[:, 0]], dim=-1) / (
+        2 * double_face_areas.unsqueeze(-1)
+    )
+    rot_edge_13 = torch.stack([-edge_13[:, 1], edge_13[:, 0]], dim=-1) / (
+        2 * double_face_areas.unsqueeze(-1)
+    )
+
+    idx_i = torch.cat([torch.arange(0, n_faces, device=device)] * 4)
+    idx_j = torch.cat([faces[:, 1], faces[:, 0], faces[:, 2], faces[:, 0]])
+    idx = torch.stack([idx_i, idx_j])
+    values = torch.cat([rot_edge_13, -rot_edge_13, rot_edge_21, -rot_edge_21])
+
+    grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
+    grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
+
+    return grad_x, grad_y
+
+
+def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    if vertices.shape[-1] == 2:
+        return grad_2d(vertices, faces)
+    elif vertices.shape[-1] == 3:
+        return grad_3d(vertices, faces)
 
 
 def laplacian(
