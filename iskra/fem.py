@@ -50,6 +50,19 @@ def mass_intrinsic_inv(
 
 
 def grad_triangle_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    """Finite element gradient matrix for 3d triangles.
+
+    Given a triangle mesh in 3d, computes the finite element gradient matrix
+    assuming piecewise linear hat function basis.
+
+    Args:
+    vertices (torch.Tensor):(n,d) tensor vertex list a triangle mesh
+    faces (torch.Tensor): tensor of ints of shape (m, 3) interpreted as face index
+    list of a triangle mesh
+
+    Returns:
+    torch.Tensor: three (m, n) sparse coo tensor of the finite element gradient matrix
+    """
     if faces.shape[-1] != 3:
         raise ValueError("grad_3d() implemented only for triangle meshes.")
     if vertices.shape[-1] != 3:
@@ -82,6 +95,22 @@ def grad_triangle_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tenso
 
 
 def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    """Finite element gradient matrix for 2d triangles.
+
+    Given a triangle mesh in 2d, computes the finite element gradient matrix
+    assuming piecewise linear hat function basis.
+
+    Args:
+    vertices (torch.Tensor):(n,d) tensor vertex list a triangle mesh
+    faces (torch.Tensor): tensor of ints of shape (m, 2) interpreted as face index
+    list of a triangle mesh
+
+    Returns:
+    torch.Tensor: two (m, n) sparse coo tensor of the finite element gradient matrix
+
+    Notes:
+    Taken from https://github.com/sgsellan/gpytoolbox/blob/main/src/gpytoolbox/grad.py
+    """
     if faces.shape[-1] != 3:
         raise ValueError("grad_2d() implemented only for triangle meshes.")
     if vertices.shape[-1] != 2:
@@ -122,6 +151,19 @@ def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tenso
 
 
 def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
+    """Finite element gradient matrix for edges.
+
+    Given a polyline, computes the finite element gradient matrix assuming piecewise
+    linear hat function basis.
+
+    Args:
+    vertices (torch.Tensor): (n,d) tensor vertex list of a polyline where
+    edges (torch.Tensor): tensor of ints of shape (m, 2) interpreted as edge
+    index list of a polyline
+
+    Returns:
+    torch.Tensor: (m, n) sparse coo tensor of the finite element gradient matrix
+    """
     if edges.shape[-1] != 2:
         raise ValueError("grad_1d() implemented only for edges only.")
 
@@ -150,6 +192,21 @@ def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
 
 
 def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    """Finite element gradient matrix.
+
+    Given a triangle mesh or a polyline, computes the finite element gradient matrix
+    assuming piecewise linear hat function basis.
+
+    Args:
+    vertices (torch.Tensor):(n,d) tensor vertex list of a polyline or triangle mesh
+    faces (torch.Tensor): tensor of ints
+        if (m, 2),  interpret as edge index list of a polyline
+        if (m, 3),  interpret as face index list of a triangle mesh
+
+    Returns:
+    torch.Tensor: S (m, n) sparse coo tensor of the finite element gradient matrix
+    where S is 1 for polyline, 2 for triangle mesh in 2d, and 3 for triangle mesh in 3d
+    """
     if faces.shape[-1] == 2:
         return grad_edges(vertices, faces)
     if vertices.shape[-1] == 2:
