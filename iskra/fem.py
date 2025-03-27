@@ -125,9 +125,6 @@ def grad_1d(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
     if edges.shape[-1] != 2:
         raise ValueError("grad_1d() implemented only for edges only.")
 
-    if vertices.shape[-1] != 3:
-        raise ValueError("grad_1d() vertices must be in 3D")
-
     edge_len = edge_lengths(
         torch.stack((vertices[edges[:, 1], :], vertices[edges[:, 0], :]), dim=1)
     )
