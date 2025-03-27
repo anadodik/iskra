@@ -49,7 +49,7 @@ def mass_intrinsic_inv(
     return diag(1 / vertex_areas)
 
 
-def grad_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+def grad_triangle_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     if faces.shape[-1] != 3:
         raise ValueError("grad_3d() implemented only for triangle meshes.")
     if vertices.shape[-1] != 3:
@@ -60,20 +60,20 @@ def grad_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     device = vertices.device
 
     triangles = face_index(vertices, faces)
-    edge_21 = triangles[:, 1, :] - triangles[:, 0, :]
-    edge_13 = triangles[:, 0, :] - triangles[:, 2, :]
+    edge_01 = triangles[:, 1, :] - triangles[:, 0, :]
+    edge_20 = triangles[:, 0, :] - triangles[:, 2, :]
 
-    face_normals = torch.linalg.cross(edge_21, -edge_13)
+    face_normals = torch.linalg.cross(edge_01, -edge_20)
     double_face_areas = torch.linalg.vector_norm(face_normals, dim=-1, keepdim=True)
     face_normals = torch.nn.functional.normalize(face_normals, p=2, dim=-1)
 
-    rot_edge_21 = torch.linalg.cross(face_normals, edge_21) / double_face_areas
-    rot_edge_13 = torch.linalg.cross(face_normals, edge_13) / double_face_areas
+    rot_edge_01 = torch.linalg.cross(face_normals, edge_01) / double_face_areas
+    rot_edge_20 = torch.linalg.cross(face_normals, edge_20) / double_face_areas
 
     idx_i = torch.cat([torch.arange(0, n_faces, device=device)] * 4)
     idx_j = torch.cat([faces[:, 1], faces[:, 0], faces[:, 2], faces[:, 0]])
     idx = torch.stack([idx_i, idx_j])
-    values = torch.cat([rot_edge_13, -rot_edge_13, rot_edge_21, -rot_edge_21])
+    values = torch.cat([rot_edge_20, -rot_edge_20, rot_edge_01, -rot_edge_01])
 
     grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
     grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
@@ -81,7 +81,7 @@ def grad_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     return grad_x, grad_y, grad_z
 
 
-def grad_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     if faces.shape[-1] != 3:
         raise ValueError("grad_2d() implemented only for triangle meshes.")
     if vertices.shape[-1] != 2:
@@ -121,7 +121,7 @@ def grad_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     return grad_x, grad_y
 
 
-def grad_1d(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
+def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
     if edges.shape[-1] != 2:
         raise ValueError("grad_1d() implemented only for edges only.")
 
@@ -151,11 +151,11 @@ def grad_1d(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
 
 def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     if faces.shape[-1] == 2:
-        return grad_1d(vertices, faces)
+        return grad_edges(vertices, faces)
     if vertices.shape[-1] == 2:
-        return grad_2d(vertices, faces)
+        return grad_triangle_2d(vertices, faces)
     elif vertices.shape[-1] == 3:
-        return grad_3d(vertices, faces)
+        return grad_triangle_3d(vertices, faces)
 
 
 def laplacian(

@@ -73,7 +73,3 @@ def test_grad_3d_triangle() -> None:
     )
 
     torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])
