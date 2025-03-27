@@ -132,6 +132,10 @@ def grad_1d(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
         torch.stack((vertices[edges[:, 1], :], vertices[edges[:, 0], :]), dim=1)
     )
 
+    edge_len[edge_len == 0] = 1e-8
+
+    inv_len = 1.0 / edge_len
+
     n_vertices = vertices.shape[0]
     n_faces = edges.shape[0]
     device = vertices.device
@@ -141,29 +145,11 @@ def grad_1d(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
     idx_j = torch.cat((edges[:, 0], edges[:, 1]))
     idx = torch.stack([idx_i, idx_j])
 
-    grad_x = torch.sparse_coo_tensor(
-        idx,
-        torch.cat(
-            [-vertices[edges[:, 1], 0] / edge_len, vertices[edges[:, 0], 0] / edge_len]
-        ),
-        size=[n_faces, n_vertices],
-    )
-    grad_y = torch.sparse_coo_tensor(
-        idx,
-        torch.cat(
-            [-vertices[edges[:, 1], 1] / edge_len, vertices[edges[:, 0], 1] / edge_len]
-        ),
-        size=[n_faces, n_vertices],
-    )
-    grad_z = torch.sparse_coo_tensor(
-        idx,
-        torch.cat(
-            [-vertices[edges[:, 1], 2] / edge_len, vertices[edges[:, 0], 2] / edge_len]
-        ),
-        size=[n_faces, n_vertices],
-    )
+    values = torch.cat([-inv_len, inv_len])
 
-    return grad_x, grad_y, grad_z
+    grad = torch.sparse_coo_tensor(idx, values, size=[n_faces, n_vertices])
+
+    return grad
 
 
 def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
