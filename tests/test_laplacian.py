@@ -1,38 +1,92 @@
-import numpy as np
 import pytest
 import torch
 
-from iskra.cotan_laplacian import triangle_cot_laplacian, squared_edge_lengths
-from iskra.geometry import cotan_weights
+from iskra.fem import laplacian
 
 
-def test_laplacian_2d_triangle() -> None:
-    V = torch.tensor(
-        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+def test_cotan_laplacian_2d_triangle() -> None:
+    vertices = torch.tensor(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, -1.0]],
         dtype=torch.float32,
     )
-    F = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    faces = torch.tensor([[0, 1, 2], [0, 3, 1]], dtype=torch.long)
 
-    L = triangle_cot_laplacian(V, F)
+    lap = laplacian(vertices, faces, "cotan")
 
-    gt = np.array([[-1.0, 0.5, 0.5], [0.5, -0.5, 0.0], [0.5, 0.0, -0.5]])
+    gt = torch.tensor(
+        [
+            [-2.0, 1.0, 0.5, 0.5],
+            [1.0, -1.0, 0.0, 0.0],
+            [0.5, 0.0, -0.5, 0.0],
+            [0.5, 0.0, 0.0, -0.5],
+        ],
+        dtype=vertices.dtype,
+    )
 
-    torch.testing.assert_close(L.toarray(), gt, rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(lap.to_dense(), gt, rtol=0.0, atol=1e-6)
 
 
-def test_laplacian_3d_triangle() -> None:
-    V = torch.tensor(
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+def test_uniform_laplacian_2d_triangle() -> None:
+    vertices = torch.tensor(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, -1.0]],
         dtype=torch.float32,
     )
-    F = torch.tensor([[0, 1, 2]], dtype=torch.long)
+    faces = torch.tensor([[0, 1, 2], [0, 3, 1]], dtype=torch.long)
 
-    L = triangle_cot_laplacian(V, F)
+    lap = laplacian(vertices, faces, "uniform")
 
-    gt = np.array([[-1.0, 0.5, 0.5], [0.5, -0.5, 0.0], [0.5, 0.0, -0.5]])
+    gt = torch.tensor(
+        [
+            [-3.0, 1.0, 1.0, 1.0],
+            [1.0, -3.0, 1.0, 1.0],
+            [1.0, 1.0, -2.0, 0.0],
+            [1.0, 1.0, 0.0, -2.0],
+        ],
+        dtype=vertices.dtype,
+    )
 
-    torch.testing.assert_close(L.toarray(), gt, rtol=0.0, atol=1e-6)
+    torch.testing.assert_close(lap.to_dense(), gt, rtol=0.0, atol=1e-6)
 
 
-if __name__ == "__main__":
-    pytest.main([__file__])
+def test_cotan_laplacian_3d_triangle() -> None:
+    vertices = torch.tensor(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0]],
+        dtype=torch.float32,
+    )
+    faces = torch.tensor([[0, 1, 2], [0, 3, 1]], dtype=torch.long)
+
+    lap = laplacian(vertices, faces, "cotan")
+
+    gt = torch.tensor(
+        [
+            [-2.0, 1.0, 0.5, 0.5],
+            [1.0, -1.0, 0.0, 0.0],
+            [0.5, 0.0, -0.5, 0.0],
+            [0.5, 0.0, 0.0, -0.5],
+        ],
+        dtype=vertices.dtype,
+    )
+
+    torch.testing.assert_close(lap.to_dense(), gt, rtol=0.0, atol=1e-6)
+
+
+def test_uniform_laplacian_3d_triangle() -> None:
+    vertices = torch.tensor(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0]],
+        dtype=torch.float32,
+    )
+    faces = torch.tensor([[0, 1, 2], [0, 3, 1]], dtype=torch.long)
+
+    lap = laplacian(vertices, faces, "uniform")
+
+    gt = torch.tensor(
+        [
+            [-3.0, 1.0, 1.0, 1.0],
+            [1.0, -3.0, 1.0, 1.0],
+            [1.0, 1.0, -2.0, 0.0],
+            [1.0, 1.0, 0.0, -2.0],
+        ],
+        dtype=vertices.dtype,
+    )
+
+    torch.testing.assert_close(lap.to_dense(), gt, rtol=0.0, atol=1e-6)

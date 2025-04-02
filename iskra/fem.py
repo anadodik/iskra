@@ -91,7 +91,8 @@ def grad_triangle_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tenso
     grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
     grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
     grad_z = torch.sparse_coo_tensor(idx, values[:, 2], size=[n_faces, n_vertices])
-    return grad_x, grad_y, grad_z
+
+    return grad_x.coalesce(), grad_y.coalesce(), grad_z.coalesce()
 
 
 def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
@@ -147,7 +148,7 @@ def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tenso
     grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
     grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
 
-    return grad_x, grad_y
+    return grad_x.coalesce(), grad_y.coalesce()
 
 
 def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
@@ -188,7 +189,7 @@ def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
 
     grad = torch.sparse_coo_tensor(idx, values, size=[n_faces, n_vertices])
 
-    return grad
+    return grad.coalesce()
 
 
 def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
@@ -215,12 +216,131 @@ def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
         return grad_triangle_3d(vertices, faces)
 
 
+def laplacian_triangle(
+    vertices: torch.Tensor,
+    faces: torch.Tensor,
+    weight_type: Literal["cotan", "uniform"],
+) -> torch.Tensor:
+    """Built the Laplacian matrix for a triangle mesh.
+
+    We use the convention that diagonal entries are the minus sum of off-diagonal
+    entries. Thus, the diagonal entries are negative and the matrix is
+    negative semi-definite.
+
+    Args:
+        vertices (torch.Tensor): #V x dim tensor of vertex position
+        faces (torch.Tensor): #F x 3 tensor of mesh triangles
+        weight_type (string): type of the weight. Either cotan or uniform
+
+    Returns:
+        torch.Tensor: #V x #V COO sparse matrix of the Laplacian matrix
+    """
+    n_vertices = vertices.shape[0]
+    device = vertices.device
+
+    if weight_type == "cotan":
+        v0, v1, v2 = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]
+
+        # edges opposite v0, v1, v2
+        e0, e1, e2 = v1 - v2, v2 - v0, v0 - v1
+
+        def cot(a, b):
+            dot = (a * b).sum(dim=1)
+            if a.shape[1] == 3:
+                cross = torch.linalg.norm(torch.linalg.cross(a, b), dim=1)
+            elif a.shape[1] == 2:
+                cross = (a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]).abs()
+            else:
+                raise ValueError("Only 2D or 3D vertices are supported.")
+            return dot / cross.clamp(min=1e-8)
+
+        cot0 = cot(e1, e2)
+        cot1 = cot(e2, e0)
+        cot2 = cot(e0, e1)
+
+        i_idx = torch.cat(
+            [
+                faces[:, 1],
+                faces[:, 2],
+                faces[:, 2],
+                faces[:, 0],
+                faces[:, 0],
+                faces[:, 1],
+            ]
+        )
+        j_idx = torch.cat(
+            [
+                faces[:, 2],
+                faces[:, 1],
+                faces[:, 0],
+                faces[:, 2],
+                faces[:, 1],
+                faces[:, 0],
+            ]
+        )
+        weights = 0.5 * torch.cat([cot0, cot0, cot1, cot1, cot2, cot2])
+
+        ij = torch.stack([i_idx, j_idx])
+        ij, inv = torch.unique(ij, dim=1, return_inverse=True)
+        weights = torch.zeros(
+            ij.shape[1], device=device, dtype=vertices.dtype
+        ).scatter_add(0, inv, weights)
+
+        i_idx, j_idx = ij[0], ij[1]
+        off_diag_vals = -weights
+
+    elif weight_type == "uniform":
+        I = faces[:, [0, 1, 2]].reshape(-1)
+        J = faces[:, [1, 2, 0]].reshape(-1)
+        edges = torch.stack([torch.minimum(I, J), torch.maximum(I, J)], dim=0)
+        edges = torch.unique(edges, dim=1)
+        i_idx = torch.cat([edges[0], edges[1]])
+        j_idx = torch.cat([edges[1], edges[0]])
+        off_diag_vals = torch.ones_like(i_idx, dtype=vertices.dtype)
+    else:
+        raise ValueError(f"Unsupported weight type: {weight_type}")
+
+    # Diagonal entries: minus sum of off-diagonal values
+    diag_vals = -torch.zeros(
+        n_vertices, dtype=vertices.dtype, device=device
+    ).scatter_add(0, i_idx, off_diag_vals)
+    diag_idx = torch.arange(n_vertices, device=device)
+
+    row_idx = torch.cat([i_idx, diag_idx])
+    col_idx = torch.cat([j_idx, diag_idx])
+    values = torch.cat([off_diag_vals, diag_vals])
+
+    lap = torch.sparse_coo_tensor(
+        indices=torch.stack([row_idx, col_idx]),
+        values=values,
+        size=(n_vertices, n_vertices),
+    )
+
+    return lap.coalesce()
+
+
 def laplacian(
     vertices: torch.Tensor,
     faces: torch.Tensor,
-    weight_type: Literal["cotan", "uniform"] = "cotan",
+    weight_type: Literal["cotan", "uniform"] = "uniform",
 ) -> torch.Tensor:
-    pass
+    """Built the Laplacian matrix for a mesh. Currently supports only triangle mesh.
+
+    We use the convention that diagonal entries are the abs sum of off-diagonal entries.
+    Thus, the diagonal entries are positive and the matrix is positive semi-definite
+
+    Args:
+        vertices (torch.Tensor): #V x dim tensor of vertex position
+        faces (torch.Tensor): #F x 3 tensor of mesh triangles
+        weight_type (string): type of the weight. Either cotan or uniform
+
+    Returns:
+        torch.Tensor: #V x #V COO sparse matrix of the Laplacian matrix
+    """
+    if faces.shape[-1] == 3:
+        return laplacian_triangle(vertices, faces, weight_type)
+    else:
+        raise ValueError("Input to Laplacian should be a triangle mesh")
 
 
 def laplacian_intrinsic(
