@@ -51,11 +51,11 @@ def test_tetrahedra_subfaces(tetrahedra: torch.Tensor) -> None:
     )
     assert_equal(tris, tris_expected)
 
-    tets_to_tris_expected = torch.tensor([[3, 2, 1, 0], [3, 6, 4, 5]])
+    tets_to_tris_expected = torch.tensor([[0, 1, 2, 3], [5, 4, 6, 3]])
     assert_equal(tets_to_tris, tets_to_tris_expected)
 
     tets_to_tris_sign_expeceted = torch.tensor(
-        [[1.0, -1.0, 1.0, -1.0], [-1.0, -1.0, -1.0, 1.0]]
+        [[1.0, 1.0, 1.0, 1.0], [-1.0, -1.0, 1.0, -1.0]]
     )
     assert_equal(tets_to_tris_sign, tets_to_tris_sign_expeceted)
 
