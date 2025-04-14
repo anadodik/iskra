@@ -49,13 +49,17 @@ def test_tetrahedra_subfaces(tetrahedra: torch.Tensor) -> None:
     tris_expected = torch.tensor(
         [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3], [1, 2, 4], [1, 3, 4], [2, 3, 4]]
     )
-    assert_equal(tris, tris_expected)
 
-    tets_to_tris_expected = torch.tensor([[3, 2, 1, 0], [3, 6, 4, 5]])
-    assert_equal(tets_to_tris, tets_to_tris_expected)
+    torch.testing.assert_close(tris, tris_expected, rtol=0, atol=0)
+
+    tets_to_tris_expected = torch.tensor([[0, 1, 2, 3], [5, 4, 6, 3]])
+    torch.testing.assert_close(tets_to_tris, tets_to_tris_expected, rtol=0, atol=0)
 
     tets_to_tris_sign_expeceted = torch.tensor(
-        [[1.0, -1.0, 1.0, -1.0], [-1.0, -1.0, -1.0, 1.0]]
+        [[1.0, 1.0, 1.0, 1.0], [-1.0, -1.0, 1.0, -1.0]]
+    )
+    torch.testing.assert_close(
+        tets_to_tris_sign, tets_to_tris_sign_expeceted, rtol=0, atol=0
     )
     assert_equal(tets_to_tris_sign, tets_to_tris_sign_expeceted)
 
@@ -80,15 +84,19 @@ def test_edge_flaps(triangles: torch.Tensor) -> None:
 
 
 def test_edges_subfaces(edges: torch.Tensor) -> None:
-    verts, verts_to_edges, verts_to_edges_sign = get_subfaces(edges)
+    verts, edges_to_verts, edges_to_verts_sign = get_subfaces(edges, 0)
     verts_expected = torch.tensor([[0], [1], [2]])
-    assert_equal(verts, verts_expected)
-    verts_to_edges_expected = torch.tensor([[1, 0], [2, 1], [0, 2]])
-    assert_equal(verts_to_edges, verts_to_edges_expected)
-    verts_to_edges_sign_expected = torch.ones_like(
-        verts_to_edges_expected, dtype=torch.float32
+
+    torch.testing.assert_close(verts, verts_expected, rtol=0, atol=0)
+    edges_to_verts_expected = torch.tensor([[1, 0], [2, 1], [0, 2]])
+
+    torch.testing.assert_close(edges_to_verts, edges_to_verts_expected, rtol=0, atol=0)
+    edges_to_verts_sign_expected = torch.ones_like(
+        edges_to_verts_expected, dtype=torch.float32
     )
-    assert_equal(verts_to_edges_sign, verts_to_edges_sign_expected)
+    torch.testing.assert_close(
+        edges_to_verts_sign, edges_to_verts_sign_expected, rtol=0, atol=0
+    )
 
 
 def test_connected_components(disconnected: tuple[int, torch.Tensor]):

@@ -4,6 +4,14 @@ import pytest
 import torch
 
 from iskra.dec import hodge_0, hodge_0_inv, hodge_1, hodge_1_inv, hodge_2, hodge_2_inv
+from iskra.geometry import (
+    edge_lengths,
+    tetrahedron_volumes,
+    tetrahedron_volumes_intrinsic,
+    triangle_areas,
+    triangle_areas_intrinsic,
+)
+from iskra.topology import face_index, get_subfaces
 
 
 @pytest.fixture
@@ -68,7 +76,7 @@ def test_triangles(triangles: tuple[torch.Tensor, torch.Tensor]) -> None:
         [1 / 2, 1 / 2, 0.0, 1 / 2, 1 / 2], device=verts.device
     )
     torch.testing.assert_close(hodge_1(verts, faces).values(), expected_hodge_1)
-    expected_hodge_1_inv = torch.tensor([2, 2, 1e7, 2, 2], device=verts.device)
+    expected_hodge_1_inv = torch.tensor([-2, -2, -1e7, -2, -2], device=verts.device)
     torch.testing.assert_close(
         hodge_1_inv(verts, faces, clamp_min=1e-7).values(), expected_hodge_1_inv
     )
