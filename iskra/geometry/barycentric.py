@@ -164,7 +164,7 @@ def barycentric_coordinates(
 
 def is_inside_pairwise(
     x: torch.Tensor, simplices: torch.Tensor, tol: float = 1e-24
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Checks whether each of the points in `x` is in any of the tets in `tets`.
 
     Args:
@@ -175,7 +175,10 @@ def is_inside_pairwise(
 
     Returns:
         torch.Tensor: [V, T] binary tensor that signifies whether a point
-        is contained inside of a simplex.
+            is contained inside of a simplex.
+
+        torch.Tensor: [V, T, 3] float tensor with the barycentric weight of each
+            vertex on x in the triangles.
     """
     assert x.shape[-1] == simplices.shape[-1]
 
@@ -199,7 +202,7 @@ def is_inside_pairwise(
             "is_inside_pairwise only supports edges, triangles, and tetrahedra."
         )
 
-    return is_inside
+    return is_inside, coordinates
 
 
 def barycentric_interpolate(values: torch.Tensor, bary: torch.Tensor) -> torch.Tensor:
