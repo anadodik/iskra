@@ -35,7 +35,7 @@ def edges() -> torch.Tensor:
 
 
 @pytest.fixture
-def disconnected() -> torch.Tensor:
+def disconnected() -> tuple[int, torch.Tensor]:
     n_vertices = 6
     faces = torch.tensor(
         [[1, 2, 3], [2, 4, 3]],

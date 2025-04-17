@@ -17,7 +17,7 @@ from iskra.topology import edge_flaps
 
 
 @pytest.fixture
-def no_boundary() -> torch.Tensor:
+def no_boundary() -> tuple[torch.Tensor, torch.Tensor]:
     verts = torch.tensor(
         [
             [0.0, 0.0, 0.0],
@@ -40,7 +40,7 @@ def test_vertex_tangent_bundle(no_boundary: tuple[torch.Tensor, torch.Tensor]) -
     source = 0
     intrinsic = to_intrinsic(torch.tensor([1.0, 0.0, 0]), tangents[0], binormals[0])
     transported = transport_from_face(
-        source, intrinsic, faces.shape[0], flaps, connection
+        source, intrinsic, faces.shape[0], flaps, connection, 1
     )
     extrinsic = to_extrinsic(transported, tangents, binormals)
     expected_face_1 = torch.tensor([0.0, 0.0, -1.0])

@@ -33,7 +33,7 @@ from iskra.geometry.distances import (
 from iskra.geometry.dual_quaternions import DualQuaternion
 from iskra.geometry.element_quality import abs_tetrahedron_heights, triangle_altitudes
 from iskra.geometry.extrude_boundary import extrude_boundary_polygon
-from iskra.geometry.normals import edge_normals, triangle_area_normals
+from iskra.geometry.normals import edge_normals, triangle_area_normals, triangle_normals
 from iskra.geometry.quaternions import Quaternion
 from iskra.geometry.volume import (
     edge_lengths,

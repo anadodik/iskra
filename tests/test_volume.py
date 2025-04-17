@@ -15,7 +15,7 @@ from iskra.topology import face_index, get_subfaces
 
 
 @pytest.fixture
-def tetrahedron() -> torch.Tensor:
+def tetrahedron() -> tuple[torch.Tensor, torch.Tensor]:
     verts = torch.tensor(
         [
             [0.0, 0.0, 0.0],
@@ -31,12 +31,12 @@ def tetrahedron() -> torch.Tensor:
 
 
 @pytest.fixture
-def triangle() -> torch.Tensor:
+def triangle() -> tuple[torch.Tensor, torch.Tensor]:
     verts = torch.tensor(
         [
             [0.0, 0.0, 0.0],
             [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
+            [0.0, 2.0, 0.0],
         ]
     )
     faces = torch.tensor(
@@ -62,7 +62,7 @@ def test_tetrahedron(tetrahedron: tuple[torch.Tensor, torch.Tensor]) -> None:
 
 def test_triangle(triangle: tuple[torch.Tensor, torch.Tensor]) -> None:
     verts, faces = triangle
-    expected_volumes = torch.tensor([1 / 2], device=verts.device)
+    expected_volumes = torch.tensor([1.0], device=verts.device)
 
     volumes = triangle_areas(face_index(verts, faces))
     torch.testing.assert_close(volumes, expected_volumes)

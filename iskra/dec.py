@@ -86,7 +86,7 @@ def hodge_2_inv(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
 def laplacian(
     vertices: torch.Tensor, faces: torch.Tensor
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    lap = d_10(vertices, faces) @ hodge_1(vertices, faces) @ d_01(vertices, faces)
+    lap = d_10(faces) @ hodge_1(vertices, faces) @ d_01(faces)
     mass = hodge_0(vertices, faces)
     return lap, mass
 

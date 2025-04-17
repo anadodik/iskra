@@ -15,7 +15,7 @@ from iskra.topology import face_index, get_subfaces
 
 
 @pytest.fixture
-def triangles() -> torch.Tensor:
+def triangles() -> tuple[torch.Tensor, torch.Tensor]:
     verts = torch.tensor(
         [
             [0.0, 0.0, 0.0],
@@ -31,7 +31,7 @@ def triangles() -> torch.Tensor:
 
 
 @pytest.fixture
-def tetrahedra() -> torch.Tensor:
+def tetrahedra() -> tuple[torch.Tensor, torch.Tensor]:
     # TODO (anadodik): implement tet DEC
     verts = torch.tensor(
         [
@@ -49,7 +49,7 @@ def tetrahedra() -> torch.Tensor:
 
 
 @pytest.fixture
-def edges() -> torch.Tensor:
+def edges() -> tuple[torch.Tensor, torch.Tensor]:
     # TODO (anadodik): implement edge DEC
     verts = torch.tensor(
         [
