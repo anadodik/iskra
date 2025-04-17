@@ -8,10 +8,10 @@ import torch
 from cholespy import CholeskySolverF, MatrixType
 
 
-def eye(n: int, device: str | torch.device = "cpu"):
+def eye(n: int, dtype: torch.dtype = torch.float32, device: str | torch.device = "cpu"):
     idx = torch.arange(n, device=device)
     ij = torch.stack(2 * [idx])
-    values = torch.ones([n], device=device)
+    values = torch.ones([n], dtype=dtype, device=device)
     return torch.sparse_coo_tensor(ij, values, size=[n, n]).coalesce()
 
 
@@ -37,7 +37,7 @@ def scipy_to_torch(
     return x_torch
 
 
-def torch_to_scipy(x: torch.Tensor) -> torch.Tensor:
+def torch_to_scipy(x: torch.Tensor) -> scipy.sparse.coo_array:
     x = x.to_sparse_coo().coalesce()
     data = x.values().cpu().numpy()
     idcs = x.indices().cpu().numpy().astype(np.int64)
@@ -96,7 +96,7 @@ def get_slice(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
                 selected_idx[dim, :] = 0
             case tuple() | torch.Tensor() | slice():
                 idx_map = torch.empty(x.shape[dim], dtype=torch.long, device=x.device)
-                idx_map[idx] = torch.arange(new_shape[dim], device=idx.device)
+                idx_map[idx] = torch.arange(new_shape[dim], device=x.device)
                 selected_idx[dim, :] = idx_map[selected_idx[dim, :]]
 
     return torch.sparse_coo_tensor(
@@ -199,7 +199,9 @@ def min_quadratic_energy(
     known_idx: torch.Tensor,
     known_values: torch.Tensor,
 ) -> torch.Tensor:
-    if rhs.ndim != known_values.ndim or rhs.shape[-1] != known_values.shape[-1]:
+    if rhs.ndim != known_values.ndim or (
+        rhs.ndim > 1 and rhs.shape[-1] != known_values.shape[-1]
+    ):
         raise ValueError(
             "rhs must have the same number of dim and same last dim as known_values. "
             f"rhs.shape = {rhs.shape}, known_values.shape = {known_values.shape}."
@@ -211,12 +213,25 @@ def min_quadratic_energy(
     unknown_mask[known_idx] = False
     unknown_idx = torch.nonzero(unknown_mask).flatten()
     system_uu = get_slice(system, unknown_idx, unknown_idx)
-    system_uk = get_slice(system, unknown_idx, known_idx)
+    if known_idx.nelement() > 0:
+        system_uk = get_slice(system, unknown_idx, known_idx)
+        known_part = system_uk @ known_values
+    else:
+        known_part = 0
     rhs_u = rhs[unknown_idx, ...]
-    new_rhs = rhs_u - system_uk @ known_values
+    new_rhs = rhs_u - known_part
 
-    solver = CholeskySolver(system_uu)
-    unknown = solver.solve(new_rhs)
+    if system_uu.dtype == torch.cfloat:
+        # TODO: make complex numbers work on the GPU and with gradients
+        system_uu_sp = torch_to_scipy(system_uu.detach().cpu())
+        solver = scipy.sparse.linalg.splu(system_uu_sp)
+        unknown = torch.tensor(
+            solver.solve(new_rhs.detach().cpu().numpy()), device=rhs.device
+        )
+    else:
+        solver = CholeskySolver(system_uu)
+        unknown = solver.solve(new_rhs)
+
     result = torch.zeros_like(rhs)
     result[unknown_idx] = unknown
     result[known_idx] = known_values

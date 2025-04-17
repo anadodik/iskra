@@ -370,7 +370,9 @@ def reduce_on_subface(
     assert faces.ndim == 2
 
     values_shape = values.shape[1:]
-    scattered = torch.zeros([n_subfaces, *values_shape], device=values.device)
+    scattered = torch.zeros(
+        [n_subfaces, *values_shape], dtype=values.dtype, device=values.device
+    )
     broadcast_faces = faces[(...,) + (None,) * len(values_shape)]
     broadcast_faces = broadcast_faces.expand(-1, -1, *values_shape)
     for i in range(faces.shape[-1]):
