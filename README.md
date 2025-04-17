@@ -22,18 +22,18 @@ brew install git-lfs  # on MacOS
 git lfs install
 ```
 
-Set up conda dev environment with the following snippet:
+Change into the cloned iskra directory and install it to your active environment using:
 ```
-conda env create -f environment.yaml
-conda activate iskra
+pip install .
 ```
 
 ## Development
-
-Lastly, if you plan on contributing, you will also need the development dependencies, and compile the C++ extensions.
+Lastly, if you plan on contributing, you will need the development dependencies and to compile the C++ extensions in editable mode.
 This can be done by running the following:
 ```
+conda env create -f environment.yaml
 conda env update -f environment-dev.yaml
+conda activate iskra
 pip install --no-build-isolation -Ceditable.rebuild=true -ve .
 ```
 
