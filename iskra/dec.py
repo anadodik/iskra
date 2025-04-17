@@ -8,25 +8,25 @@ from iskra.sparse import diag
 from iskra.topology import face_index, get_subfaces, incidence_matrix, reduce_on_subface
 
 
-def d_01(faces: torch.Tensor) -> torch.Tensor:
+def d_01(faces: torch.Tensor, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     edges, _, _ = get_subfaces(faces, 1)
-    return incidence_matrix(edges, signed=True)
+    return incidence_matrix(edges, signed=True).to(dtype=dtype)
 
 
-def d_10(faces: torch.Tensor) -> torch.Tensor:
+def d_10(faces: torch.Tensor, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     edges, _, _ = get_subfaces(faces, 1)
     derivative = d_01(edges).mT.coalesce()
-    return derivative
+    return derivative.to(dtype=dtype)
 
 
-def d_12(faces: torch.Tensor) -> torch.Tensor:
+def d_12(faces: torch.Tensor, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     triangles, _, _ = get_subfaces(faces, 2)
-    return incidence_matrix(triangles, signed=True)
+    return incidence_matrix(triangles, signed=True).to(dtype=dtype)
 
 
-def d_21(faces: torch.Tensor) -> torch.Tensor:
+def d_21(faces: torch.Tensor, dtype: torch.dtype = torch.float32) -> torch.Tensor:
     triangles, _, _ = get_subfaces(faces, 2)
-    return d_12(triangles).mT
+    return d_12(triangles).mT.to(dtype=dtype)
 
 
 def hodge_0(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
