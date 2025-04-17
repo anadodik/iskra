@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     { name = "Ana Dodik", email = "anadodik@mit.edu" },
-    { name = "Ahmed Mahmoud", email = "ahdhn@mit.edu" },
+    { name = "Ahmed Mahmoud", email = "a.has.mahmoud@gmail.com" },
 ]
 dependencies = [
     "numpy",
