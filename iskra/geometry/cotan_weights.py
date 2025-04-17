@@ -27,7 +27,9 @@ def cotan_weights_intrinsic(
 
     edge_idx = [0, 1, 2]
     nbh_edge_idcs = [(1, 2), (0, 2), (0, 1)]
-    edge_cot_weights = torch.zeros([edge_lengths.shape[0]], device=edge_lengths.device)
+    edge_cot_weights = torch.zeros(
+        [edge_lengths.shape[0]], dtype=edge_lengths.dtype, device=edge_lengths.device
+    )
     for edge_i, nbh_edge_i in zip(edge_idx, nbh_edge_idcs):
         cot_ij = (
             -face_edge_lengths_sq[:, edge_i]

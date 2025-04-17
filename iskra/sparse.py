@@ -5,7 +5,7 @@ from functools import reduce
 import numpy as np
 import scipy.sparse
 import torch
-from cholespy import CholeskySolverF, MatrixType
+from cholespy import CholeskySolverD, CholeskySolverF, MatrixType
 
 
 def eye(n: int, dtype: torch.dtype = torch.float32, device: str | torch.device = "cpu"):
@@ -150,7 +150,10 @@ class CholespySolve(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        ctx, solver: CholeskySolverF, b: torch.Tensor, x: torch.Tensor | None = None
+        ctx,
+        solver: CholeskySolverF | CholeskySolverD,
+        b: torch.Tensor,
+        x: torch.Tensor | None = None,
     ) -> torch.Tensor:
         ctx.solver = solver
         b = b.contiguous()
@@ -160,9 +163,11 @@ class CholespySolve(torch.autograd.Function):
         return x
 
     @staticmethod
-    def backward(ctx, forward_grad: torch.Tensor) -> tuple[None, torch.Tensor, None]:
+    def backward(
+        ctx, forward_grad: torch.Tensor
+    ) -> tuple[None, torch.Tensor | None, None]:
         forward_grad = forward_grad.contiguous()
-        b_grad = None
+        b_grad: torch.Tensor | None = None
         if ctx.needs_input_grad[1]:
             b_grad = torch.zeros_like(forward_grad)
             ctx.solver.solve(forward_grad, b_grad)
@@ -172,7 +177,7 @@ class CholespySolve(torch.autograd.Function):
 cholespy_solve = CholespySolve.apply
 
 
-class CholeskySolver:
+class CholeskySolver(torch.nn.Module):
     """Cholesky solver.
 
     Precomputes the Cholesky decomposition of the system matrix and solves the
@@ -180,16 +185,30 @@ class CholeskySolver:
     """
 
     def __init__(self, mat: torch.Tensor):
+        super().__init__()
         mat = mat.coalesce()
-        self.solver = CholeskySolverF(
-            mat.shape[0],
-            mat.indices()[0],
-            mat.indices()[1],
-            mat.values(),
-            MatrixType.COO,
-        )
+        if mat.dtype == torch.float32:
+            self.solver = CholeskySolverF(
+                mat.shape[0],
+                mat.indices()[0],
+                mat.indices()[1],
+                mat.values(),
+                MatrixType.COO,
+            )
+        elif mat.dtype == torch.float64:
+            self.solver = CholeskySolverD(
+                mat.shape[0],
+                mat.indices()[0],
+                mat.indices()[1],
+                mat.values(),
+                MatrixType.COO,
+            )
+        else:
+            raise TypeError(
+                f"CholeskySolver only supports float and double matrices, found {mat.dtype}."
+            )
 
-    def solve(self, b: torch.Tensor, x: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, b: torch.Tensor, x: torch.Tensor | None = None) -> torch.Tensor:
         return cholespy_solve(self.solver, b, x)
 
 
@@ -230,7 +249,7 @@ def min_quadratic_energy(
         )
     else:
         solver = CholeskySolver(system_uu)
-        unknown = solver.solve(new_rhs)
+        unknown = solver(new_rhs)
 
     result = torch.zeros_like(rhs)
     result[unknown_idx] = unknown

@@ -31,8 +31,7 @@ def hermite_cutoff(x: torch.Tensor, degree: int = 1) -> torch.Tensor:
 def soft_clamp(
     x: torch.Tensor, sigma: float = 0.05, left: bool = True, right: bool = True
 ) -> torch.Tensor:
-    assert (sigma >= 0.0).all(), "sigma must be nonnegative."
-    if (sigma == 0.0).all() or (not left and not right):
+    if sigma == 0.0 or (not left and not right):
         x = torch.clip(x, 0.0, 1.0)
     else:
         cx = 0.5 * (
@@ -42,7 +41,7 @@ def soft_clamp(
                     + torch.exp(-(x**2) / (2.0 * sigma**2))
                 )
                 * np.sqrt(2.0 / np.pi)
-                + torch.sqrt(1.0 / sigma**2)
+                + np.sqrt(1.0 / sigma**2)
             )
             * sigma
             - (-1.0 + x) * torch.special.erf((-1.0 + x) / (np.sqrt(2.0) * sigma))
