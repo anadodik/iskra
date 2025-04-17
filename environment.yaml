@@ -24,13 +24,6 @@ dependencies:
     - scipy
     - networkx
     - cholespy
-    # Visualizations
-    - pillow==9.5
-    - imgui[full]
-    - moderngl==5.8.0
-    - pyrr
-    - palettable
-    - imageio[ffmpeg]
     # Mesh IO
     - trimesh
     - meshio
@@ -39,4 +32,3 @@ dependencies:
     # Helpers
     - rich
     - typing-extensions
-    - pytest

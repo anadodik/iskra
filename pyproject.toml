@@ -6,16 +6,30 @@ readme = "README.md"
 requires-python = ">=3.10"
 authors = [
     { name = "Ana Dodik", email = "anadodik@mit.edu" },
+    { name = "Ahmed Mahmoud", email = "ahdhn@mit.edu" },
 ]
-classifiers = [
-    "License :: MIT",
+dependencies = [
+    "numpy",
+    "scipy",
+    "networkx",
+    "cholespy",
+    "rich",
+    "typing-extensions",
+    "trimesh",
+    "meshio",
+    "libigl",
+    "fsspec[http]",
 ]
 
 [project.urls]
 Homepage = "https://github.com/anadodik/iskra"
 
 [build-system]
-requires = ["scikit-build-core >=0.10.7", "nanobind >=2.5.0"]
+requires = [
+    "scikit-build-core >=0.10.7",
+    "nanobind >=2.5.0",
+    "typing-extensions",
+]
 build-backend = "scikit_build_core.build"
 
 [tool.setuptools]
