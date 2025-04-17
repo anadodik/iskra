@@ -5,17 +5,14 @@ from argparse import ArgumentParser
 import torch
 
 from iskra.directional import (
-    face_connection_d_01,
     face_connection_laplacian,
-    face_connection_mass,
     face_tangent_bundle,
     to_extrinsic_n_rosy,
     to_intrinsic_n_rosy,
 )
-from iskra.geometry.volume import edge_lengths, triangle_areas
 from iskra.mesh import Mesh
-from iskra.sparse import diag, min_quadratic_energy
-from iskra.topology import edge_flaps, face_index, get_subfaces
+from iskra.sparse import min_quadratic_energy
+from iskra.topology import edge_flaps
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Compute and visualize a smooth N-RoSy field.")
