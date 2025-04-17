@@ -34,15 +34,15 @@ if __name__ == "__main__":
     verts_var = torch.nn.Parameter(verts.clone())
     optim = torch.optim.SGD([verts_var], lr=2_000)
     mcf_solver = CholeskySolver(mass + t * lap)
-    sobolev_solver = CholeskySolver(mass + alpha * lap)
+    h1_solver = CholeskySolver(mass + alpha * lap)
     for i in range(500):
         optim.zero_grad()
-        diff = mcf_solver.solve(mass @ verts_var) - verts
+        diff = mcf_solver(mass @ verts_var) - verts
         loss = (diff.mT @ mass @ diff).diagonal().sum()
         loss.backward()
         if verts_var.grad is None:
             raise RuntimeError("verts_var.grad is None!")
-        verts_var.grad = sobolev_solver.solve(mass @ verts_var.grad)
+        verts_var.grad = h1_solver(mass @ verts_var.grad)
         optim.step()
 
     try:

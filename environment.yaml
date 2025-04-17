@@ -5,26 +5,27 @@ channels:
   - conda-forge
 dependencies:
   - python==3.12
-  - nvidia/label/cuda-12.5.1::cuda-version
-  - nvidia::cuda
-  - nvidia::cuda-toolkit
-  - nvidia::cuda-tools
-  - nvidia::cuda-nvcc-tools
-  - nvidia::cuda-cudart-dev
-  - nvidia::cuda-cudart-static
-  - nvidia::cuda-runtime
-  - nvidia::cuda-nvcc
-  - nvidia::cuda-libraries-dev
-  - nvidia::cuda-libraries-static
-  - nvidia::libcublas-dev
-  - nvidia::cudnn
-  - nvidia::cutensor
+  # - nvidia/label/cuda-12.5.1::cuda-version
+  # - nvidia::cuda
+  # - nvidia::cuda-toolkit
+  # - nvidia::cuda-tools
+  # - nvidia::cuda-nvcc-tools
+  # - nvidia::cuda-cudart-dev
+  # - nvidia::cuda-cudart-static
+  # - nvidia::cuda-runtime
+  # - nvidia::cuda-nvcc
+  # - nvidia::cuda-libraries-dev
+  # - nvidia::cuda-libraries-static
+  # - nvidia::libcublas-dev
+  # - nvidia::cudnn
+  # - nvidia::cutensor
+  # - conda-forge::cupy-core
   - conda-forge::ffmpeg
-  - conda-forge::cupy-core
   - conda-forge::libxcrypt # nanobind fails to compile without this
   - pip
   - pip:
       # Core libraries
+      - pytorch
       - numpy
       - scipy
       - networkx
@@ -34,6 +35,7 @@ dependencies:
       - meshio
       - libigl
       - fsspec[http]
+      - requests
       # Helpers
       - rich
       - typing-extensions
