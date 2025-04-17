@@ -1,3 +1,4 @@
+*.code-workspace
 results/
 .DS_Store
 *.ini
