@@ -322,7 +322,9 @@ class Mesh(torch.nn.Module):
         return_uvs: bool = False,
         return_material_ids: bool = False,
     ) -> Self | tuple[Self, torch.Tensor]:
-        faces, vertices, uvs, normals, material_ids = load(str(path), device=device)
+        faces, vertices, uvs, uvs_idx, normals, normals_idx, material_ids = load(
+            str(path), device=device
+        )
         topology = Topology(faces, vertices.shape[0])
         geometry = Geometry(topology, vertices)
 
@@ -332,9 +334,9 @@ class Mesh(torch.nn.Module):
         if normalize:
             mesh.geom.normalize()
         if return_uvs and return_material_ids:
-            return mesh, uvs, material_ids
+            return mesh, uvs, uvs_idx, material_ids
         if return_material_ids:
             return mesh, material_ids
         if return_uvs:
-            return mesh, uvs
+            return mesh, uvs, uvs_idx
         return mesh

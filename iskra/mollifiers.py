@@ -98,3 +98,10 @@ def soft_point_edge_dist_matrix(
     (edges,) = atleast_nd(3, edges)
     x, edges = x[..., :, None, :], edges[..., None, :, :, :]
     return soft_point_edge_dist(x, edges, sigma=sigma)
+
+
+def bump(t: torch.Tensor, start: float = 0.0, end: float = 1.0) -> torch.Tensor:
+    t = (t - start) / (end - start)
+    t = torch.where(t > 0, torch.where(t < 1.0, t, 1.0), 0.0)
+    f = torch.sigmoid((2 * t - 1) / (t * (1 - t) + 1e-7))
+    return torch.where(t > 0, torch.where(t < 1.0, f, 1.0), 0.0)

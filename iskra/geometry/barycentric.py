@@ -15,10 +15,10 @@ def edge_barycentric_coordinates(
     origin = edges[..., 0, :]
     direction = edges[..., 1, :] - edges[..., 0, :]
     length = torch.linalg.vector_norm(direction, dim=-1, keepdim=True)
-    direction = direction / length
+    direction = direction / (length + 1e-12)
 
     valid_edges = length[..., 0] > 1e-12
-    t = torch.linalg.vecdot((x - origin) / length, direction)
+    t = torch.linalg.vecdot((x - origin) / (length + 1e-12), direction)
     bary = torch.stack([1 - t, t], -1)
     return bary, valid_edges
 
@@ -220,7 +220,7 @@ def barycentric_interpolate(values: torch.Tensor, bary: torch.Tensor) -> torch.T
     if bary.ndim != values.ndim - 1 or bary.shape[-1] != values.shape[-2]:
         raise ValueError(
             "Incompatible tensor shapes."
-            "bary has to be [..., n_simplex_vertices] but is {bary.shape}, "
+            f"bary has to be [..., n_simplex_vertices] but is {bary.shape}, "
             f"values has to be [..., n_simplex_vertices] but is {values.shape}."
         )
     return torch.sum(bary[..., None] * values, -2)

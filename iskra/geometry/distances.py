@@ -48,15 +48,44 @@ def point_dist(
     ord: int | float | str = 2,
     keepdim: bool = False,
 ) -> torch.Tensor:
+    """Computes the distance between vectors x_i and y_i.
+
+    Unlike PyTorch's `torch.cdist`, this function works with `torch.func` transforms.
+
+    Args:
+        x (torch.Tensor): `[..., D]` tensor of d-dimensional vectors.
+        y (torch.Tensor): `[..., D]` tensor of d-dimensional vectors.
+        ord (int | float | str, optional): Order of p-norm.
+        follows same convention as PyTorch's `vector_norm`. Defaults to 2.
+        keepdim (bool, optional): Whether to keep the last dimension after reduction.
+            Defaults to False.
+
+    Raises:
+        ValueError: Tensors x and y must have the same shape.
+
+    Returns:
+        torch.Tensor: A tensor of size `[..., 1]` if `keepdim=True`,
+            otherwise with the last dimension removed.
+    """
     if x.ndim != y.ndim:
         raise ValueError(
-            f"Tensors have mismatching number of dimensions: "
-            f"{x.shape} != {y.shape}."
+            f"Tensors have mismatching number of dimensions: {x.shape} != {y.shape}."
         )
     x, y = broadcast_tensors(x, y)
-    distance: torch.Tensor = linalg.vector_norm(
-        x - y, axis=-1, ord=ord, keepdim=keepdim
-    )
+    if ord == 2:
+        # Use specialized routine for 2-norm:
+        diff = x - y
+        sqr_distance = torch.sum(diff * diff, -1, keepdim=keepdim)
+        distance = torch.sqrt(sqr_distance.clamp_min(1e-12))
+    elif (isinstance(ord, int) or isinstance(ord, float)) and ord % 2 == 0:
+        # Clamp other even L-norms to avoid NaNs:
+        sqr_distance = torch.sum((x - y) ** ord, -1, keepdim=keepdim)
+        distance = torch.pow(sqr_distance.clamp_min(1e-12), 1 / ord)
+    else:
+        # For other norms use default PyTorch behavior:
+        distance: torch.Tensor = torch.linalg.vector_norm(
+            x - y, axis=-1, ord=ord, keepdim=keepdim
+        )
     return distance
 
 
@@ -65,9 +94,9 @@ def edge_project(x: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
     origin = edges[..., 0, :]
     edge_vectors = edges[..., 1, :] - edges[..., 0, :]
     length = torch.linalg.vector_norm(edge_vectors, dim=-1, keepdim=True)
-    edge_vectors = edge_vectors / length
+    edge_vectors = edge_vectors / (length + 1e-12)
 
-    t = torch.linalg.vecdot((x - origin) / length, edge_vectors)
+    t = torch.linalg.vecdot((x - origin) / (length + 1e-12), edge_vectors)
     bary = torch.stack([1 - t, t], -1)
     bary = torch.clamp(bary, min=0, max=1)
     return barycentric_interpolate(edges, bary)

@@ -126,6 +126,9 @@ def _load_io_ext(
             parsed = load_obj(mesh_file)
             vertices = parsed.positions().to(device=device)
             normals = parsed.normals().to(device=device)
+            normals_idx = parsed.normal_idx().to(device=device)
+            uvs = parsed.texcoords().to(device=device)
+            uvs_idx = parsed.texcoord_idx().to(device=device)
             material_ids = parsed.material_ids().to(device=device)
             triangles = parsed.faces().to(device=device)
             lines = parsed.lines().to(device=device)
@@ -138,6 +141,9 @@ def _load_io_ext(
             triangles = torch.tensor(faces, device=device, dtype=torch.long)
             lines = torch.tensor([], device=device, dtype=torch.long)
             normals = torch.tensor([], device=device, dtype=torch.float32)
+            uvs = torch.zeros_like(vertices)[:, :2]
+            uvs_idx = triangles
+            normals_idx = triangles
         if triangles.shape[0] > 0 and lines.shape[0] > 0:
             raise ValueError(
                 "Cannot create Mesh object from file data: "
@@ -151,8 +157,7 @@ def _load_io_ext(
         else:
             faces = torch.arange(vertices.shape[0], device=device, dtype=torch.long)
             faces = faces[:, None]
-        uvs = torch.zeros_like(vertices)[:, :2]
-        return faces, vertices, uvs, normals, material_ids
+        return faces, vertices, uvs, uvs_idx, normals, normals_idx, material_ids
 
 
 def load(

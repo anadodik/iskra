@@ -22,6 +22,9 @@ struct ParsedMesh
   // Therefore, we store only the memory here.
 
   std::vector<int64_t> faces;
+  std::vector<int64_t> texcoord_idx;
+  std::vector<int64_t> normal_idx;
+
   size_t faces_shape[2] = {0, 3};
 
   std::vector<int64_t> lines;
@@ -47,7 +50,7 @@ struct ParsedMesh
            "    texcoords=tensor(shape=[" + std::to_string(texcoords_shape[0]) + ", " + std::to_string(texcoords_shape[1]) + "]),\n" +
            "    lines=tensor(shape=[" + std::to_string(lines_shape[0]) + ", " + std::to_string(lines_shape[1]) + "]),\n" +
            "    faces=tensor(shape=[" + std::to_string(faces_shape[0]) + ", " + std::to_string(faces_shape[1]) + "]),\n" +
-           "    material_ids=tensor(shape=[" + std::to_string(material_ids_shape[0]) + ", " + std::to_string(material_ids_shape[0]) + "]),\n" +
+           "    material_ids=tensor(shape=[" + std::to_string(material_ids_shape[0]) + ", " + std::to_string(material_ids_shape[1]) + "]),\n" +
            ")";
   }
 };
@@ -102,10 +105,14 @@ void parse_faces(const rapidobj::Mesh &rapidMesh, ParsedMesh &mesh)
   mesh.faces_shape[0] = n_faces;
   mesh.faces_shape[1] = dim;
   mesh.faces.resize(n_faces * dim);
+  mesh.texcoord_idx.resize(n_faces * dim);
+  mesh.normal_idx.resize(n_faces * dim);
 
   for (int v_i = 0; v_i < rapidMesh.indices.size(); ++v_i)
   {
     mesh.faces[v_i] = rapidMesh.indices[v_i].position_index;
+    mesh.texcoord_idx[v_i] = rapidMesh.indices[v_i].texcoord_index;
+    mesh.normal_idx[v_i] = rapidMesh.indices[v_i].normal_index;
   }
 }
 
@@ -125,7 +132,7 @@ void parse_normals(const rapidobj::Array<float> &normals, ParsedMesh &mesh)
 
 void parse_texcoords(const rapidobj::Array<float> &texcoords, ParsedMesh &mesh)
 {
-  mesh.texcoords_shape[0] = texcoords.size() / 3;
+  mesh.texcoords_shape[0] = texcoords.size() / 2;
   mesh.texcoords.resize(texcoords.size());
   std::copy(texcoords.begin(), texcoords.end(), mesh.texcoords.begin());
 }
@@ -153,7 +160,7 @@ ParsedMesh parse_rapidobj(const rapidobj::Result &result)
   ParsedMesh parsed{};
   parse_positions(result.attributes.positions, parsed);
   parse_normals(result.attributes.normals, parsed);
-  parse_normals(result.attributes.texcoords, parsed);
+  parse_texcoords(result.attributes.texcoords, parsed);
   if (result.shapes.size() == 1)
   {
     parse_material_ids(result.shapes[0].mesh.material_ids, parsed);
@@ -190,6 +197,10 @@ NB_MODULE(io_ext, m)
            { return Tensor<int64_t, 1>(self->material_ids.data(), 2, self->material_ids_shape); }, nb::rv_policy::reference_internal)
       .def("faces", [](ParsedMesh *self)
            { return Tensor<int64_t, -1>(self->faces.data(), 2, self->faces_shape); }, nb::rv_policy::reference_internal)
+      .def("texcoord_idx", [](ParsedMesh *self)
+           { return Tensor<int64_t, -1>(self->texcoord_idx.data(), 2, self->faces_shape); }, nb::rv_policy::reference_internal)
+      .def("normal_idx", [](ParsedMesh *self)
+           { return Tensor<int64_t, -1>(self->normal_idx.data(), 2, self->faces_shape); }, nb::rv_policy::reference_internal)
       .def("lines", [](ParsedMesh *self)
            { return Tensor<int64_t, 2>(self->lines.data(), 2, self->lines_shape); }, nb::rv_policy::reference_internal)
       .def("__repr__", &ParsedMesh::to_string);

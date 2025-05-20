@@ -38,7 +38,7 @@ def tetrahedron_volumes(tets: torch.Tensor) -> torch.Tensor:
 
 
 def volume_form(simplices: torch.Tensor) -> torch.Tensor:
-    assert simplices.ndim == 3
+    assert simplices.ndim >= 2
 
     n_simplex_verts = simplices.shape[-2]
     if n_simplex_verts == 4:
