@@ -7,12 +7,7 @@ dependencies:
   - pip:
       # Linters:
       - ruff
-      - flake8
-      - flake8-copyright
-      - mypy
-      - black
-      - isort
-      - types-requests
+      - basedpyright
       - nvtx
       # Visualization
       - matplotlib

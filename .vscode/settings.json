@@ -1,7 +1,11 @@
 {
     "python.linting.enabled": true,
     "python.linting.flake8Enabled": false,
-    "python.linting.mypyEnabled": true,
+    "python.linting.mypyEnabled": false,
+    "mypy-type-checker.args": [
+        "--config-file=pyproject.toml"
+    ],
+    "python.languageServer": "None", // ruff still cannot do autocompletion
     "editor.formatOnSave": true,
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",
@@ -11,13 +15,14 @@
             "source.fixAll": "explicit"
         }
     },
-    "python.formatting.provider": "none",
     "python.testing.pytestArgs": [
         "tests"
     ],
-    "ruff.args": [
-        "--config=pyproject.toml"
-    ],
+    "basedpyright.analysis.inlayHints.variableTypes": false,
+    "basedpyright.analysis.inlayHints.callArgumentNames": false,
+    "basedpyright.analysis.inlayHints.functionReturnTypes": false,
+    "ruff.configuration": "pyproject.toml",
+    "ty.experimental.completions.enable": false,
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
     "cmake.configureOnOpen": false,
@@ -101,5 +106,6 @@
     "cSpell.words": [
         "doublearea",
         "polyline"
-    ]
+    ],
+    "python.analysis.typeCheckingMode": "off"
 }
