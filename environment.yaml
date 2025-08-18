@@ -5,30 +5,36 @@ channels:
   - conda-forge
 dependencies:
   - python==3.12
-  - pytorch==2.7.0
-  - torchvision
-  - pytorch-cuda=12.4
-  - cuda-nvcc=12.4
-  - cuda-runtime=12.4
-  - cuda-libraries-dev=12.4
-  - libcublas-dev=12.4  
-  - cupy
-  - cudnn
-  - cutensor 
-  - nccl
+  - nvidia/label/cuda-12.5.1::cuda-version
+  - nvidia::cuda
+  - nvidia::cuda-toolkit
+  - nvidia::cuda-tools
+  - nvidia::cuda-nvcc-tools
+  - nvidia::cuda-cudart-dev
+  - nvidia::cuda-cudart-static
+  - nvidia::cuda-runtime
+  - nvidia::cuda-nvcc
+  - nvidia::cuda-libraries-dev
+  - nvidia::cuda-libraries-static
+  - nvidia::libcublas-dev
+  - nvidia::cudnn
+  - nvidia::cutensor
   - conda-forge::ffmpeg
+  - conda-forge::cupy-core
+  - conda-forge::libxcrypt # nanobind fails to compile without this
   - pip
   - pip:
-    # Core libraries
-    - numpy
-    - scipy
-    - networkx
-    - cholespy
-    # Mesh IO
-    - trimesh
-    - meshio
-    - libigl
-    - fsspec[http]
-    # Helpers
-    - rich
-    - typing-extensions
+      # Core libraries
+      - numpy
+      - scipy
+      - networkx
+      - cholespy
+      # Mesh IO
+      - trimesh
+      - meshio
+      - libigl
+      - fsspec[http]
+      # Helpers
+      - rich
+      - typing-extensions
+

@@ -4,10 +4,18 @@ import torch
 
 
 def coordinate_system(n: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Build frame based on normal.
+    """Build frame (tangent and binormal) from only a normal.
 
-    Code inspired by:
+    Code based on:
     https://github.com/mitsuba-renderer/mitsuba3/blob/master/include/mitsuba/core/vector.h
+
+
+    Args:
+        b (Tensor[Float, [Bs, 3]]): Normals vectors.
+
+    Returns:
+        Tensor[Float, [Bs, 3]]: Tangent vectors.
+        Tensor[Float, [Bs, 3]]: Binormal vectors.
     """
     sign = torch.where(n[..., -1] <= -0.0, -1, 1)
     a = -torch.reciprocal(sign + n[..., -1])

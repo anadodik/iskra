@@ -49,7 +49,9 @@ def mass_intrinsic_inv(
     return diag(1 / vertex_areas)
 
 
-def grad_triangle_3d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+def grad_triangle_3d(
+    vertices: torch.Tensor, faces: torch.Tensor
+) -> tuple[torch.Tensor, ...]:
     """Finite element gradient matrix for 3d triangles.
 
     Given a triangle mesh in 3d, computes the finite element gradient matrix

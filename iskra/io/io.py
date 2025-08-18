@@ -1,20 +1,34 @@
 # Copyright (c) 2022 - present, Ana Dodik. All rights reserved.
 
 import json
+from dataclasses import dataclass, field, fields
 from io import TextIOBase
 from pathlib import Path
-from typing import Any, Optional, Type
+from typing import Any, Optional, Type, cast, TYPE_CHECKING
 
 import fsspec
 import igl
 import meshio
 import torch
-import trimesh
 from fsspec.implementations.cached import WholeFileCacheFileSystem
 from fsspec.implementations.github import GithubFileSystem
 
-from iskra.io.io_ext import ParsedMesh, load_obj_file, load_obj_string
+from iskra.io.io_ext import ParsedMesh, load_obj_file, load_obj_string  # pyright: ignore
 from iskra.logging.logging import getLogger
+
+try:
+    import trimesh
+except ModuleNotFoundError:
+    _trimesh_installed = False
+else:
+    _trimesh_installed = True
+
+try:
+    import igl
+except ModuleNotFoundError:
+    _libigl_installed = False
+else:
+    _libigl_installed = True
 
 LOGGER = getLogger(__name__)
 LOGGER.setLevel("INFO")
@@ -54,12 +68,86 @@ if "libigl" not in fsspec.registry:
     fsspec.register_implementation("libigl", _wrap_cached(LibiglFileSystem))
 
 
-def _load_trimesh(
-    path: str, device: torch.device | str = "cpu"
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+@dataclass(kw_only=True, slots=True)
+class MeshData:
+    """Contains parsed mesh data.
+
+    Attributes:
+        tetrahedra (torch.Tensor): `[T, 4]` tensor of tetrahedra indices.
+        triangles (torch.Tensor): `[F, 3]` tensor of triangle indices.
+        lines (torch.Tensor): `[E, 2]` tensor of line segment indices.
+        positions (torch.Tensor): `[V, 2 | 3]` tensor of vertex positions.
+        uvs (torch.Tensor): `[U, 2]` tensor of uv coordinates.
+        uvs_idx (torch.Tensor): `[F, 3]` tensor of uv coordinates indices.
+        normals (torch.Tensor): `[N, 2 | 3]` tensor of normal vectors.
+        normals_idx (torch.Tensor): `[F, 3]` tensor of normal vector indices.
+        material_ids (torch.Tensor): `[M, 1]` tensor of per-face material IDs.
+    """
+
+    positions: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 3], dtype=torch.float32)
+    )
+    tetrahedra: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 4], dtype=torch.long)
+    )
+    triangles: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 3], dtype=torch.long)
+    )
+    lines: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 2], dtype=torch.long)
+    )
+    uvs: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 2], dtype=torch.float32)
+    )
+    uvs_idx: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 3], dtype=torch.long)
+    )
+    normals: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 3], dtype=torch.float32)
+    )
+    normals_idx: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 3], dtype=torch.long)
+    )
+    material_ids: torch.Tensor = field(
+        default_factory=lambda: torch.empty([0, 3], dtype=torch.long)
+    )
+
+    def to(self, device: torch.device | str) -> "MeshData":
+        tensor_dict = {
+            field.name: getattr(self, field.name).to(device=device)
+            for field in fields(self)
+        }
+        return MeshData(**tensor_dict)
+
+
+def load_obj(
+    file: str | Path | TextIOBase, device: torch.device | str = "cpu"
+) -> MeshData:
+    if isinstance(file, TextIOBase):
+        parsed = load_obj_string(file.read())
+    elif isinstance(file, str):
+        parsed = load_obj_file(file)
+    elif isinstance(file, Path):
+        parsed = load_obj_file(str(file))
+    else:
+        raise TypeError(f"Argument file with type {type(file)} is not supported")
+    LOGGER.info(parsed)
+    return MeshData(
+        positions=parsed.positions(),
+        normals=parsed.normals(),
+        normals_idx=parsed.normal_idx(),
+        uvs=parsed.texcoords(),
+        uvs_idx=parsed.texcoord_idx(),
+        material_ids=parsed.material_ids(),
+        triangles=parsed.faces(),
+        lines=parsed.lines(),
+    ).to(device=device)
+
+
+def _load_trimesh(path: str, device: torch.device | str = "cpu") -> MeshData:
     suffix = Path(path).suffix
     with fsspec.open(path) as mesh_file:
-        trimesh_mesh = trimesh.load_mesh(
+        trimesh_mesh = trimesh.load_mesh(  # pyright: ignore
             mesh_file,
             maintain_order=True,
             merge_tex=True,
@@ -67,27 +155,25 @@ def _load_trimesh(
             file_type=suffix,
         )
         LOGGER.info(f"Loaded mesh with {trimesh_mesh.vertices.shape[0]} vertices.")
-        faces = torch.tensor(trimesh_mesh.faces, device=device, dtype=torch.int64)
-        vertices = torch.tensor(
-            trimesh_mesh.vertices, device=device, dtype=torch.float32
-        )
+        faces = torch.tensor(trimesh_mesh.faces, dtype=torch.long)
+        vertices = torch.tensor(trimesh_mesh.vertices, dtype=torch.float32)
         if vertices.shape[1] == 3 and torch.all(vertices[:, 2] == 0.0):
             vertices = vertices[:, :2]
         uvs = None
-        if isinstance(trimesh_mesh.visual, trimesh.visual.ColorVisuals):
+        if isinstance(trimesh_mesh.visual, trimesh.visual.ColorVisuals):  # pyright: ignore
             LOGGER.warning(f"Could not find texture for mesh {path}!")
             uvs = torch.zeros_like(vertices[:, :2])
-        elif isinstance(trimesh_mesh.visual, trimesh.visual.TextureVisuals):
+        elif isinstance(trimesh_mesh.visual, trimesh.visual.TextureVisuals):  # pyright: ignore
             uvs = torch.tensor(
-                trimesh_mesh.visual.uv, device=device, dtype=torch.float32
+                trimesh_mesh.visual.uv,  # pyright:ignore
+                device=device,
+                dtype=torch.float32,
             )
         assert uvs is not None
-        return faces, vertices, uvs, None, None
+        return MeshData(triangles=faces, positions=vertices, uvs=uvs).to(device=device)
 
 
-def _load_meshio(
-    path: str, device: torch.device | str = "cpu"
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _load_meshio(path: str, device: torch.device | str = "cpu") -> MeshData:
     suffix = Path(path).suffix
     with fsspec.open(path, mode="r") as mesh_file:
         meshio_mesh = meshio.read(
@@ -101,72 +187,29 @@ def _load_meshio(
         vertices = torch.tensor(meshio_mesh.points, dtype=torch.float32, device=device)
         faces = torch.tensor(tet_cells[0].data, dtype=torch.long, device=device)
         uvs = torch.zeros_like(vertices)
-    return faces, vertices, uvs, None, None
+    return MeshData(triangles=faces, positions=vertices, uvs=uvs).to(device=device)
 
 
-def load_obj(
-    file: str | Path | TextIOBase, device: torch.device | str = "cpu"
-) -> ParsedMesh:
-    if isinstance(file, TextIOBase):
-        parsed = load_obj_string(file.read())
-    elif isinstance(file, str):
-        parsed = load_obj_file(file)
-    elif isinstance(file, Path):
-        parsed = load_obj_file(str(file))
-    else:
-        raise TypeError(f"Argument file with type {type(file)} is not supported")
-    return parsed
+def _load_libigl(path: str, device: torch.device | str = "cpu") -> MeshData:
+    LOGGER.warning("Falling back to libigl.")
+    vertices, faces = igl.read_triangle_mesh(str(path))
+    vertices = torch.tensor(vertices, device=device, dtype=torch.float32)
+    triangles = torch.tensor(faces, device=device, dtype=torch.long)
+    return MeshData(triangles=triangles, positions=vertices).to(device=device)
 
 
-def _load_io_ext(
-    path: str, device: torch.device | str = "cpu"
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    with fsspec.open(path, "r") as mesh_file:
-        try:
-            parsed = load_obj(mesh_file)
-            vertices = parsed.positions().to(device=device)
-            normals = parsed.normals().to(device=device)
-            normals_idx = parsed.normal_idx().to(device=device)
-            uvs = parsed.texcoords().to(device=device)
-            uvs_idx = parsed.texcoord_idx().to(device=device)
-            material_ids = parsed.material_ids().to(device=device)
-            triangles = parsed.faces().to(device=device)
-            lines = parsed.lines().to(device=device)
-            LOGGER.info(parsed)
-        except Exception as e:
-            LOGGER.warning(e)
-            LOGGER.warning("Falling back to libigl.")
-            vertices, faces = igl.read_triangle_mesh(str(path))
-            vertices = torch.tensor(vertices, device=device, dtype=torch.float32)
-            triangles = torch.tensor(faces, device=device, dtype=torch.long)
-            lines = torch.tensor([], device=device, dtype=torch.long)
-            normals = torch.tensor([], device=device, dtype=torch.float32)
-            uvs = torch.zeros_like(vertices)[:, :2]
-            uvs_idx = triangles
-            normals_idx = triangles
-        if triangles.shape[0] > 0 and lines.shape[0] > 0:
-            raise ValueError(
-                "Cannot create Mesh object from file data: "
-                "OBJ file contains both triangles and lines."
-            )
-        faces: torch.Tensor
-        if triangles.shape[0] > 0:
-            faces = triangles
-        elif lines.shape[0] > 0:
-            faces = lines
-        else:
-            faces = torch.arange(vertices.shape[0], device=device, dtype=torch.long)
-            faces = faces[:, None]
-        return faces, vertices, uvs, uvs_idx, normals, normals_idx, material_ids
-
-
-def load(
-    path: str, device: torch.device | str = "cpu"
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def load(path: str | Path, device: torch.device | str = "cpu") -> MeshData:
     suffix = Path(path).suffix
     if suffix == ".msh" or suffix == ".mesh":
-        return _load_meshio(path, device=device)
+        return _load_meshio(str(path), device=device)
     elif suffix == ".obj":
-        return _load_io_ext(path, device=device)
+        with fsspec.open(path, mode="r") as file:
+            if TYPE_CHECKING:
+                file = cast(TextIOBase, file)
+            return load_obj(file, device=device)
+    elif _libigl_installed:
+        return _load_libigl(str(path), device=device)
+    elif _trimesh_installed:
+        return _load_trimesh(str(path), device=device)
     else:
-        return _load_trimesh(path, device=device)
+        raise RuntimeError(f"Failed to load file: {path}.")

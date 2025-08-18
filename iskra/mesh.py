@@ -2,20 +2,15 @@
 
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterator
-
-from iskra.geometry.normals import edge_length_normals
-from iskra.geometry.volume import edge_lengths, tetrahedron_volumes
-
-try:
-    from typing import Self  # type: ignore
-except ImportError:
-    from typing_extensions import Self
+from typing import TYPE_CHECKING, Iterator, Self
 
 import torch
 
 from iskra.geometry import BBox, triangle_area_normals, triangle_areas
+from iskra.geometry.normals import edge_length_normals
+from iskra.geometry.volume import edge_lengths, tetrahedron_volumes, volume_form
 from iskra.io import load
+from iskra.io.io import MeshData
 from iskra.logging.logging import getLogger
 from iskra.topology import boundary, face_index, get_subfaces, reduce_on_subface
 
@@ -195,9 +190,7 @@ class Geometry(torch.nn.Module):
         # return torch.nn.functional.normalize(normals, dim=-1)
         if self._vertex_normals is None:
             normals = reduce_on_subface(
-                self.area_face_normals,
-                self.topo.faces,
-                self.vertices.shape[0],
+                self.area_face_normals, self.topo.faces, self.vertices.shape[0], "sum"
             )
             return torch.nn.functional.normalize(normals, dim=-1)
         else:
@@ -209,23 +202,12 @@ class Geometry(torch.nn.Module):
 
     @property
     def face_areas(self) -> torch.Tensor:
-        if self.topo.intrinsic_dim == 1:
-            return edge_lengths(self.faces)
-        elif self.topo.intrinsic_dim == 2 and self.ambient_dim in (2, 3):
-            return triangle_areas(self.triangles)
-        elif self.topo.intrinsic_dim == 3:
-            return tetrahedron_volumes(self.faces)
-        else:
-            raise NotImplementedError(
-                f"Normals not implemented for "
-                f"intrinsic_dim={self.topo.intrinsic_dim} "
-                f"and ambient_dim={self.ambient_dim}"
-            )
+        return volume_form(self.faces)
 
     @property
     def vertex_areas(self) -> torch.Tensor:
         triple_area = reduce_on_subface(
-            self.face_areas, self.topo.faces, self.topo.n_vertices
+            self.face_areas, self.topo.faces, self.topo.n_vertices, "sum"
         )
         return triple_area / 3
 
@@ -241,18 +223,18 @@ class Mesh(torch.nn.Module):
             topology = Topology(topology)
         if isinstance(geometry, torch.Tensor):
             geometry = Geometry(topology, geometry)
-        self.topo = topology
-        self.geom = geometry
+        self.topo: Topology = topology
+        self.geom: Geometry = geometry
 
     def __iter__(self) -> Iterator[Topology | Geometry]:
         return iter([self.topo, self.geom])
 
     @property
-    def vertices(self) -> int:
+    def vertices(self) -> torch.Tensor:
         return self.geom.vertices
 
     @property
-    def faces(self) -> int:
+    def faces(self) -> torch.Tensor:
         return self.topo.faces
 
     @property
@@ -269,7 +251,8 @@ class Mesh(torch.nn.Module):
 
     def deduplicate_vertices(
         self, vertex_values: list[torch.Tensor] | None = None
-    ) -> Self:
+    ) -> "tuple[Mesh, torch.Tensor] | tuple[Mesh, torch.Tensor, list[torch.Tensor]]":
+        # raise DeprecationWarning("Please sync with gemfields code.")
         vertices = self.geom.vertices
         vertices, unique_index = torch.unique(vertices, dim=0, return_inverse=True)
         faces = unique_index[self.topo.faces.flatten()].reshape(
@@ -289,7 +272,7 @@ class Mesh(torch.nn.Module):
 
         return Mesh(faces, vertices), unique_index
 
-    def boundary_mesh(self, return_index: bool = False) -> Self:
+    def boundary_mesh(self) -> "tuple[Mesh, torch.Tensor]":
         faces = boundary(self.topo.faces)
         device = faces.device
 
@@ -308,10 +291,7 @@ class Mesh(torch.nn.Module):
         geometry = Geometry(topology, vertices)
         mesh = Mesh(topology, geometry)
 
-        if return_index:
-            return mesh, vertex_idcs
-        else:
-            return mesh
+        return mesh, vertex_idcs
 
     @classmethod
     def from_path(
@@ -319,24 +299,26 @@ class Mesh(torch.nn.Module):
         path: Path | str,
         normalize: bool = False,
         device: str | torch.device = "cuda",
-        return_uvs: bool = False,
-        return_material_ids: bool = False,
-    ) -> Self | tuple[Self, torch.Tensor]:
-        faces, vertices, uvs, uvs_idx, normals, normals_idx, material_ids = load(
-            str(path), device=device
-        )
-        topology = Topology(faces, vertices.shape[0])
-        geometry = Geometry(topology, vertices)
+    ) -> tuple[Self, MeshData]:
+        mesh_data = load(path, device=device)
+        if mesh_data.triangles.shape[0] > 0 and mesh_data.lines.shape[0] > 0:
+            raise ValueError(
+                f"Cannot create Mesh object from file data at {path} ,"
+                "file contains both triangles and lines."
+            )
+        faces: torch.Tensor
+        if mesh_data.triangles.shape[0] > 0:
+            faces = mesh_data.triangles
+        elif mesh_data.lines.shape[0] > 0:
+            faces = mesh_data.lines
+        else:  # Point cloud
+            faces = torch.arange(
+                mesh_data.positions.shape[0], device=device, dtype=torch.long
+            )[:, None]
+        topology = Topology(faces, mesh_data.positions.shape[0])
+        geometry = Geometry(topology, mesh_data.positions)
 
-        mesh = Mesh(topology, geometry)
-        if normals is not None and normals.shape[0] == mesh.geom.n_vertices:
-            mesh.geom.vertex_normals = normals
+        mesh = cls(topology, geometry)
         if normalize:
             mesh.geom.normalize()
-        if return_uvs and return_material_ids:
-            return mesh, uvs, uvs_idx, material_ids
-        if return_material_ids:
-            return mesh, material_ids
-        if return_uvs:
-            return mesh, uvs, uvs_idx
-        return mesh
+        return mesh, mesh_data

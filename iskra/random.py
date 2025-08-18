@@ -1,6 +1,8 @@
 # Copyright (c) 2022 - present, Ana Dodik. All rights reserved.
 
+from abc import ABC
 from dataclasses import dataclass
+from typing import override
 
 import torch
 
@@ -42,7 +44,21 @@ class MeshSamplingRecord:
     prim_idx: torch.Tensor
 
 
-class EdgeSampler:
+class MeshSampler(ABC):
+    def sample(self, n_samples: int) -> MeshSamplingRecord:
+        """Returns random samples uniformly distributed on mesh facets.
+
+        Args:
+            n_samples (int): Number of samples to draw.
+
+        Returns:
+            SamplingRecord: Sampling record containing information about the
+                sampled points.
+        """
+        raise NotImplementedError
+
+
+class EdgeSampler(MeshSampler):
     def __init__(self, edges: torch.Tensor, seed: int | None = 620):
         """Uniformly randomly samples a set of line segments.
 
@@ -59,15 +75,16 @@ class EdgeSampler:
         )
         self.cdf = torch.cumsum(self.edge_lengths, dim=0)
         if self.cdf.shape[0] == 0:
-            total_sum = 1.0
+            total_sum = self.cdf.new_tensor(1.0)
         else:
             total_sum = self.cdf[-1].clone()
-        self.inv_total_length = 1 / total_sum
+        self.inv_total_length: torch.Tensor = 1.0 / total_sum
         self.cdf *= self.inv_total_length
         self.generator = torch.Generator(device=self.edges.device)
         if seed is not None:
             self.generator.manual_seed(seed)
 
+    @override
     def sample(self, n_samples: int) -> MeshSamplingRecord:
         """Returns random samples uniformly distributed on the line segments.
 
@@ -102,7 +119,7 @@ class EdgeSampler:
         return samples
 
 
-class TriangleSampler:
+class TriangleSampler(MeshSampler):
     def __init__(self, triangles: torch.Tensor, seed: int | None = 620):
         """Uniformly samples a set of triangles.
 
@@ -122,6 +139,7 @@ class TriangleSampler:
         if seed is not None:
             self.generator.manual_seed(seed)
 
+    @override
     def sample(self, n_samples: int) -> MeshSamplingRecord:
         """Returns random samples uniformly distributed on the triangles.
 
@@ -159,7 +177,7 @@ class TriangleSampler:
         return samples
 
 
-class TetrahedronSampler:
+class TetrahedronSampler(MeshSampler):
     def __init__(self, tets: torch.Tensor, seed: int | None = 620) -> None:
         """Uniformly randomly samples a set of tetrahedra.
 
@@ -177,6 +195,7 @@ class TetrahedronSampler:
         if seed is not None:
             self.generator.manual_seed(seed)
 
+    @override
     def sample(self, n_samples: int) -> MeshSamplingRecord:
         """Returns random samples uniformly distributed on the triangles.
 
@@ -208,7 +227,7 @@ class TetrahedronSampler:
 
 def create_simplex_sampler(
     simplices: torch.Tensor, seed: int | None = 620
-) -> EdgeSampler | TriangleSampler | TetrahedronSampler:
+) -> MeshSampler:
     dim = simplices.shape[-2]
     if dim == 2:
         return EdgeSampler(simplices, seed)
@@ -282,3 +301,4 @@ def sample_circle(n_samples: int, device: torch.device | str = "cuda") -> torch.
     samples = torch.empty([n_samples], device=device).uniform_(-torch.pi, torch.pi)
     samples = torch.stack([samples.cos(), samples.sin()], -1)
     return samples
+

@@ -11,18 +11,17 @@ from iskra.sparse import torch_to_scipy
 
 
 def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int, ...]]:
-    """Returns indices used to find subfaces of intrinsic dimension `subface_dim` within faces of dimension `face_dim`.
+    """Returns indices of subfaces within faces.
 
-    Makes sure triangles/edges are oriented correctly,
-    and that they are opposite to the vertex indexed by
-    their position.
+    In codimension 1, makes sure triangles/edges are oriented correctly
+    and also makes sure that the `i`th subface is opposite to vertex `i`.
 
     Args:
-        face_dim (int): _description_
-        subface_dim (int): _description_
+        face_dim (int): Intrinsic dimension of face to be indexed into.
+        subface_dim (int): Intrinsic dimension of desired subface.
 
     Returns:
-        list[tuple[int, ...]]: _description_
+        list[tuple[int, ...]]: List of the indices used to get each subface.
     """
     if subface_dim < 0:
         subface_dim = face_dim + subface_dim
@@ -61,7 +60,9 @@ def simplex_parity(faces: torch.Tensor) -> torch.Tensor:
     return transpositions
 
 
-def get_subfaces(faces: torch.Tensor, subface_dim: int = -1) -> torch.Tensor:
+def get_subfaces(
+    faces: torch.Tensor, subface_dim: int = -1
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Finds all subsimplices of dimension d in a set of higher-dimensional faces.
 
     Args:
@@ -262,15 +263,15 @@ def connected_components(
 
 
 def select_linked(start_vertex: int, faces: torch.Tensor) -> torch.Tensor:
-    pass
+    raise NotImplementedError
 
 
 def loose_vertices(n_vertices: int, faces: torch.Tensor) -> torch.Tensor:
-    pass
+    raise NotImplementedError
 
 
 def flip_edges() -> torch.Tensor:
-    pass
+    raise NotImplementedError
 
 
 def ordered_boundary_edges(edges: torch.Tensor) -> list[torch.Tensor]:
@@ -358,7 +359,7 @@ def reduce_on_subface(
     """Take values defined on mesh faces and average them onto its vertices.
 
     Args:
-        values (torch.Tensor): Values defined on the mesh faces.
+        values (torch.Tensor): Values defined on mesh faces.
         faces (torch.Tensor): Face indices.
         n_subfaces (int): Total number of subfaces in the mesh.
         reduce (Literal["sum", "prod", "mean", "amax", "amin"]): Reduction operation.
