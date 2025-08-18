@@ -42,6 +42,57 @@ def hyperplane_project(
     return x - t[..., None] * normal
 
 
+def clamped_length_sqr(
+    x: torch.Tensor,
+    dim: int | tuple[int, ...] = -1,
+    keepdim: bool = False,
+    eps: float = 1e-12,
+) -> torch.Tensor:
+    """Computes the _squared_ lengths of a set of vectors and then clamps them.
+
+    Helps avoid numerical issues when computing lengths of vectors, such as:
+        * The gradient of the square-root tends to infinitey as we get closer to zero.
+        * We often wish to divide by squared length, which also explodes around zero.
+
+    Args:
+        x (Tensor[Any, ...]): Set of vectors.
+        dim (int | tuple[int, ...]): The dimension(s) along which to compute lengths.
+        keepdim (bool): Whether to reduce the selected dimensions
+            or to keep them with the length one.
+        eps (float): The _squared length_ will be clamped to this minimum value.
+
+    Returns:
+        Tensor[Any, ...]: Squared lengths of vectors along dimension dim.
+    """
+    sqr_distance = torch.sum(x * x, dim=dim, keepdim=keepdim)
+    return sqr_distance.clamp_min(eps)
+
+
+def clamped_length(
+    x: torch.Tensor,
+    dim: int | tuple[int, ...] = -1,
+    keepdim: bool = False,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """Computes the lengths of a set of vectors and then clamps them.
+
+    Helps avoid numerical issues when computing lengths of vectors, such as:
+        * The gradient of the square-root tends to infinitey as we get closer to zero.
+        * We often wish to divide by length, which also explodes around zero.
+
+    Args:
+        x (Tensor[Any, ...]): Set of vectors.
+        dim (int | tuple[int, ...]): The dimension(s) along which to compute lengths.
+        keepdim (bool): Whether to reduce the selected dimensions
+            or to keep them with the length one.
+        eps (float): The _length_ will be clamped to this minimum value.
+
+    Returns:
+        Tensor[Any, ...]: Lengths of vectors along dimension dim.
+    """
+    return torch.sqrt(clamped_length_sqr(x, dim=dim, keepdim=keepdim, eps=eps * eps))
+
+
 def point_dist(
     x: torch.Tensor,
     y: torch.Tensor,

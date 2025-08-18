@@ -1,10 +1,10 @@
 # Copyright (c) 2023 - present, Ana Dodik. All rights reserved.
 
 import dataclasses
-from bisect import bisect_left
+from bisect import bisect_left, insort
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable
+from typing import TYPE_CHECKING, Iterable, Generic, TypeVar, Literal, cast
 
 from easing_functions import CubicEaseInOut
 
@@ -369,40 +369,47 @@ def handles_to_transforms(
     return transforms
 
 
-@dataclass
-class KeyFrame:
+T = TypeVar("T")
+
+
+@dataclass(slots=True)
+class KeyFrame(Generic[T]):
     t: float
-    transforms: torch.Tensor
+    value: T
+    ease_in: Literal["linear", "spline"] = "linear"
+    ease_out: Literal["linear", "spline"] = "linear"
 
 
-class KeyFramedAnimation:
+class KeyFramedAnimation(Generic[T]):
     def __init__(self, fps: float, duration: float) -> None:
         self.fps = fps
         self.duration = duration
-        self.keyframes = []
+        self.keyframes: list[KeyFrame[T]] = []
         self.easing = CubicEaseInOut(start=0, end=self.duration, duration=self.duration)
 
-    def add_key_frame(self, keyframe: KeyFrame):
-        idx = bisect_left(self.keyframes, keyframe.t, key=lambda x: x.t)
-        self.keyframes.insert(idx, keyframe)
+    def add_key_frame(self, t: float, value: T):
+        keyframe = KeyFrame(t, value)
+        insort(self.keyframes, keyframe, key=lambda x: x.t)
 
-    def tween(self, t: float) -> torch.Tensor:
+    def tween(self, t: float) -> T:
         t = self.easing(t)
         idx = bisect_left(self.keyframes, t, key=lambda x: x.t)
         if idx == 0:
-            transforms = self.keyframes[0].transforms
-            # transforms = dual_quat.to_matrix(self.keyframes[0].transforms)
+            value = self.keyframes[0].value
         elif idx == len(self.keyframes):
-            # transforms = dual_quat.to_matrix(self.keyframes[-1].transforms)
-            transforms = self.keyframes[-1].transforms
+            value = self.keyframes[-1].value
         else:
             t1 = self.keyframes[idx - 1].t
             t2 = self.keyframes[idx].t
             t_scaled = (t - t1) / (t2 - t1)
-            t1 = dual_quat.normalize(self.keyframes[idx - 1].transforms)
-            t2 = dual_quat.normalize(self.keyframes[idx].transforms)
-            # t1 = dual_quat.to_matrix(self.keyframes[idx - 1].transforms)
-            # t2 = dual_quat.to_matrix(self.keyframes[idx].transforms)
-            transforms = (1 - t_scaled) * t1 + t_scaled * t2
-        transforms = dual_quat.normalize(transforms)
-        return transforms
+            v1 = self.keyframes[idx - 1].value
+            v2 = self.keyframes[idx].value
+            if isinstance(v1, dual_quat.DualQuaternion):
+                v1 = dual_quat.normalize(v1)
+            if isinstance(v2, dual_quat.DualQuaternion):
+                v2 = dual_quat.normalize(v2)
+            # T should really be a protocol type but I am lazy
+            value = cast(T, (1 - t_scaled) * v1 + t_scaled * v2)  # pyright: ignore
+        if isinstance(value, dual_quat.DualQuaternion):
+            value = dual_quat.normalize(value)
+        return value
