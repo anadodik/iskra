@@ -156,7 +156,7 @@ class CholespySolve(torch.autograd.Function):
         b = b.contiguous()
         if x is None:
             x = torch.zeros_like(b)
-        solver.solve(b.detach(), x)
+        solver.solve(b, x)
         return x
 
     @staticmethod
@@ -164,8 +164,8 @@ class CholespySolve(torch.autograd.Function):
         forward_grad = forward_grad.contiguous()
         b_grad = None
         if ctx.needs_input_grad[1]:
-            x = torch.zeros_like(forward_grad)
-            ctx.solver.solve(forward_grad, forward_grad, x)
+            b_grad = torch.zeros_like(forward_grad)
+            ctx.solver.solve(forward_grad, b_grad)
         return None, b_grad, None
 
 
