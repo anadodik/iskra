@@ -19,15 +19,16 @@ if __name__ == "__main__":
     parser.add_argument("mesh_path", type=str, help="The path of the mesh to load.")
     args = parser.parse_args()
 
-    mesh = Mesh.from_path(args.mesh_path, device="cpu")
+    source = 0
+    n = 4
+
+    mesh, _ = Mesh.from_path(args.mesh_path, device="cpu")
     mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices
 
     flaps = edge_flaps(faces)
     tangents, binormals, connection = face_tangent_bundle(verts, faces, flaps)
 
-    source = 0
-    n = 4
     intrinsic = to_intrinsic_n_rosy(
         torch.tensor([1.0, 0.0, 0]), tangents[0], binormals[0], n
     )

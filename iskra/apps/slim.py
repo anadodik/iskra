@@ -5,20 +5,10 @@ from argparse import ArgumentParser
 import torch
 
 from iskra.dec import laplacian
-from iskra.geometry import coordinate_system, triangle_areas, triangle_normals
+from iskra.geometry import triangle_areas, triangle_coordinate_system
 from iskra.mesh import Mesh
-from iskra.sparse import CholeskySolver, min_quadratic_energy
+from iskra.sparse_linalg import CholeskySolver, min_quadratic_energy
 from iskra.topology import boundary, face_index, get_subfaces, ordered_boundary_edges
-
-
-def triangle_coordinate_system(triangles: torch.Tensor) -> torch.Tensor:
-    edge_vecs = triangles[..., 1:, :] - triangles[..., 0:1, :]
-    n = torch.nn.functional.normalize(
-        torch.cross(edge_vecs[..., 0, :], edge_vecs[..., 1, :], dim=-1), p=2, dim=-1
-    )
-    t = torch.nn.functional.normalize(edge_vecs[..., 0, :], p=2, dim=-1)
-    b = torch.nn.functional.normalize(torch.cross(n, t, dim=-1), p=2, dim=-1)
-    return n, t, b
 
 
 def triangle_to_local(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
@@ -39,19 +29,37 @@ def uv_local(uv: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
 
 
 def symmetric_dirichlet(
-    rest_local: torch.Tensor, param_local: torch.Tensor
+    rest_local: torch.Tensor, param_local: torch.Tensor, rest_areas: torch.Tensor
 ) -> torch.Tensor:
+    # TODO: Can you do HVP? Replace vmap with vertmap?
     jac = param_local @ torch.linalg.inv(rest_local)
     energy_fwd = (jac**2).sum((-2, -1))
     energy_bwd = (torch.linalg.inv(jac) ** 2).sum((-2, -1))
     energy = rest_areas * (energy_fwd + energy_bwd)
 
     is_flipped = torch.linalg.det(param_local.mT) <= 0
-    # if is_flipped.count_nonzero() > 0:
-    #     print(f"Flipped {is_flipped.count_nonzero()} triangles.")
-    energy[is_flipped] = float("inf")
+    energy = torch.where(is_flipped, float("inf"), energy)
     return energy
 
+
+# def symmetric_dirichlet_2(
+#     rest_local: torch.Tensor, param_triangles: torch.Tensor, rest_areas: torch.Tensor
+# ) -> torch.Tensor:
+#     edge_vecs = param_triangles[..., 1:, :] - param_triangles[..., 0:1, :]
+#     param_local = edge_vecs.mT
+#     jac = param_local @ torch.linalg.inv(rest_local)
+#     energy_fwd = (jac**2).sum((-2, -1))
+#     energy_bwd = (torch.linalg.inv(jac) ** 2).sum((-2, -1))
+#     energy = rest_areas * (energy_fwd + energy_bwd)
+#
+#     is_flipped = torch.linalg.det(param_local.mT) <= 0
+#     energy = torch.where(is_flipped, float("inf"), energy)
+#     return energy[..., None]
+#
+#
+# sd_jac = torch.func.vmap(
+#     torch.func.hessian(symmetric_dirichlet_2, 1), in_dims=(0, 0, 0)
+# )
 
 if __name__ == "__main__":
     # TODO: Rename file to AQP.
@@ -80,7 +88,17 @@ if __name__ == "__main__":
     lap, mass = laplacian(verts, faces, clamp_min=0.0)
     rhs = torch.zeros([verts.shape[0], 2], dtype=dtype, device=device)
     uv_init = min_quadratic_energy(lap, rhs, bdr, bdr_uv)
-    print(torch.sort(triangle_areas(face_index(uv_init, faces))))
+    # # print(torch.sort(triangle_areas(face_index(uv_init, faces))))
+
+    # param_local = uv_local(uv_init, faces)
+    # jac = sd_jac(rest_local, face_index(uv_init, faces), rest_areas)
+    # idx_i = torch.cat([faces.flatten(), faces.flatten() + mesh.topo.n_faces])
+    # idx_j = torch.cat([faces.flatten(), faces.flatten() + mesh.topo.n_faces])
+    # print(jac.permute(0, 1, 2, 4, 3, 5).shape)
+    # print(idx_i.shape)
+    # # vjp_fn = torch.func.vjp(lambda x: uv_local(x, faces), uv_init)[1]
+    # # print(vjp_fn(jac)[0].shape)
+    # quit()
 
     uv_opt = torch.nn.Parameter(uv_init)
     lr = 100
@@ -89,28 +107,29 @@ if __name__ == "__main__":
 
     def step_fn():
         param_local = uv_local(uv_opt, faces)
-        energy = symmetric_dirichlet(rest_local, param_local)
+        energy = symmetric_dirichlet(rest_local, param_local, rest_areas)
         energy.mean().backward()
         with torch.no_grad():
             if uv_opt.grad is None:
                 raise RuntimeError("verts_var.grad is None!")
             if not torch.isfinite(uv_opt.grad).all():
                 raise RuntimeError("verts_var.grad not finite!")
-            uv_opt.grad = h1_solver(mass @ uv_opt.grad)
-            uv_opt.grad -= uv_opt.grad.mean(0, keepdim=True)
+            grad = h1_solver(mass @ uv_opt.grad)
+            grad -= grad.mean(0, keepdim=True)
 
             energy_new = symmetric_dirichlet(
-                rest_local, uv_local(uv_opt - lr * uv_opt.grad, faces)
+                rest_local, uv_local(uv_opt - lr * uv_opt.grad, faces), rest_areas
             )
             n_shrinks = 0
             while energy_new.mean() > energy.mean():
-                uv_opt.grad *= 0.1
+                grad *= 0.1
                 energy_new = symmetric_dirichlet(
-                    rest_local, uv_local(uv_opt - lr * uv_opt.grad, faces)
+                    rest_local, uv_local(uv_opt - lr * grad, faces), rest_areas
                 )
                 n_shrinks += 1
             if n_shrinks > 0:
                 print(f"Shrunk the learning rate {n_shrinks} times.")
+            uv_opt.grad = grad
 
         return energy
 

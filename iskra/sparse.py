@@ -5,7 +5,6 @@ from functools import reduce
 import numpy as np
 import scipy.sparse
 import torch
-from cholespy import CholeskySolverD, CholeskySolverF, MatrixType
 
 
 def eye(n: int, dtype: torch.dtype = torch.float32, device: str | torch.device = "cpu"):
@@ -131,6 +130,20 @@ def zero_slice(
     return fill_slice(x, 0, *indices)
 
 
+def repdiag(x: torch.Tensor, n_reps: int) -> torch.Tensor:
+    assert len(x.shape) == 2, x.shape[0] == x.shape[1]
+    x = x.coalesce()
+    indices = x.indices()
+    values = x.values()
+    size = x.shape[0]
+
+    return torch.sparse_coo_tensor(
+        torch.cat([indices + i * size for i in range(n_reps)], -1),
+        torch.cat(n_reps * [values], -1),
+        size=[n_reps * size, n_reps * size],
+    ).coalesce()
+
+
 def append(
     x: torch.Tensor, indices: torch.Tensor, values: torch.Tensor
 ) -> torch.Tensor:
@@ -140,118 +153,3 @@ def append(
         torch.cat([x._values(), values.to(x.device)], -1),
         size=x.shape,
     ).coalesce()
-
-
-class CholespySolve(torch.autograd.Function):
-    """Differentiable function to solve the linear system.
-
-    This simply calls the solve methods implemented by the Solver classes.
-    """
-
-    @staticmethod
-    def forward(
-        ctx,
-        solver: CholeskySolverF | CholeskySolverD,
-        b: torch.Tensor,
-        x: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        ctx.solver = solver
-        b = b.contiguous()
-        if x is None:
-            x = torch.zeros_like(b)
-        solver.solve(b, x)
-        return x
-
-    @staticmethod
-    def backward(
-        ctx, forward_grad: torch.Tensor
-    ) -> tuple[None, torch.Tensor | None, None]:
-        forward_grad = forward_grad.contiguous()
-        b_grad: torch.Tensor | None = None
-        if ctx.needs_input_grad[1]:
-            b_grad = torch.zeros_like(forward_grad)
-            ctx.solver.solve(forward_grad, b_grad)
-        return None, b_grad, None
-
-
-cholespy_solve = CholespySolve.apply
-
-
-class CholeskySolver(torch.nn.Module):
-    """Cholesky solver.
-
-    Precomputes the Cholesky decomposition of the system matrix and solves the
-    system by back-substitution.
-    """
-
-    def __init__(self, mat: torch.Tensor):
-        super().__init__()
-        mat = mat.coalesce()
-        if mat.dtype == torch.float32:
-            self.solver = CholeskySolverF(
-                mat.shape[0],
-                mat.indices()[0],
-                mat.indices()[1],
-                mat.values(),
-                MatrixType.COO,
-            )
-        elif mat.dtype == torch.float64:
-            self.solver = CholeskySolverD(
-                mat.shape[0],
-                mat.indices()[0],
-                mat.indices()[1],
-                mat.values(),
-                MatrixType.COO,
-            )
-        else:
-            raise TypeError(
-                f"CholeskySolver only supports float and double matrices, found {mat.dtype}."
-            )
-
-    def forward(self, b: torch.Tensor, x: torch.Tensor | None = None) -> torch.Tensor:
-        return cholespy_solve(self.solver, b, x)
-
-
-def min_quadratic_energy(
-    system: torch.Tensor,
-    rhs: torch.Tensor,
-    known_idx: torch.Tensor,
-    known_values: torch.Tensor,
-) -> torch.Tensor:
-    if rhs.ndim != known_values.ndim or (
-        rhs.ndim > 1 and rhs.shape[-1] != known_values.shape[-1]
-    ):
-        raise ValueError(
-            "rhs must have the same number of dim and same last dim as known_values. "
-            f"rhs.shape = {rhs.shape}, known_values.shape = {known_values.shape}."
-        )
-    if not system.is_coalesced():
-        system = system.coalesce()
-    n_rows = system.shape[0]
-    unknown_mask = torch.ones([n_rows], dtype=torch.bool, device=known_idx.device)
-    unknown_mask[known_idx] = False
-    unknown_idx = torch.nonzero(unknown_mask).flatten()
-    system_uu = get_slice(system, unknown_idx, unknown_idx)
-    if known_idx.nelement() > 0:
-        system_uk = get_slice(system, unknown_idx, known_idx)
-        known_part = system_uk @ known_values
-    else:
-        known_part = 0
-    rhs_u = rhs[unknown_idx, ...]
-    new_rhs = rhs_u - known_part
-
-    if system_uu.dtype == torch.cfloat:
-        # TODO: make complex numbers work on the GPU and with gradients
-        system_uu_sp = torch_to_scipy(system_uu.detach().cpu())
-        solver = scipy.sparse.linalg.splu(system_uu_sp)
-        unknown = torch.tensor(
-            solver.solve(new_rhs.detach().cpu().numpy()), device=rhs.device
-        )
-    else:
-        solver = CholeskySolver(system_uu)
-        unknown = solver(new_rhs)
-
-    result = torch.zeros_like(rhs)
-    result[unknown_idx] = unknown
-    result[known_idx] = known_values
-    return result
