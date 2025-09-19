@@ -37,5 +37,7 @@ def cotan_weights_intrinsic(
             + face_edge_lengths_sq[:, nbh_edge_i[1]]
         )
         cot_ij = cot_ij / double_area / 4
-        edge_cot_weights.scatter_add_(0, face_to_edge[:, edge_i], cot_ij)
+        edge_cot_weights = edge_cot_weights.scatter_add(
+            0, face_to_edge[:, edge_i], cot_ij
+        )
     return edge_cot_weights

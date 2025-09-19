@@ -10,7 +10,10 @@ from iskra.geometry.barycentric import (
     triangle_barycentric_coordinates,
 )
 from iskra.geometry.bbox import BBox
-from iskra.geometry.coordinate_system import coordinate_system
+from iskra.geometry.coordinate_system import (
+    normal_coordinate_system,
+    triangle_coordinate_system,
+)
 from iskra.geometry.cotan_weights import cotan_weights, cotan_weights_intrinsic
 from iskra.geometry.distances import (
     closest_edge,
@@ -83,7 +86,8 @@ __all__ = [
     "DualQuaternion",
     "extrude_boundary_polygon",
     "BBox",
-    "coordinate_system",
+    "normal_coordinate_system",
+    "triangle_coordinate_system",
     "cotan_weights",
     "cotan_weights_intrinsic",
     "triangle_areas_intrinsic",

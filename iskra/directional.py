@@ -2,7 +2,7 @@
 
 import torch
 
-from iskra.geometry import coordinate_system
+from iskra.geometry import normal_coordinate_system
 from iskra.geometry.normals import triangle_normals
 from iskra.topology import face_index, get_subfaces
 
@@ -131,7 +131,7 @@ def face_tangent_bundle(
     # Compute an arbitrary basis for each face:
     triangles = face_index(vertices, faces)
     face_normals = triangle_normals(triangles)
-    tangents, binormals = coordinate_system(face_normals)
+    tangents, binormals = normal_coordinate_system(face_normals)
 
     # Compute the connection between neighboring faces:
     edges, _, _ = get_subfaces(faces)

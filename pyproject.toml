@@ -137,4 +137,11 @@ exclude = ["**/__pycache__"]
 # stubPath = "iskra/stubs"
 reportMissingImports = "error"
 pythonVersion = "3.12"
-typeCheckingMode = "standard"
+
+[tool.pyright]
+include = ["iskra"]
+exclude = ["**/__pycache__"]
+reportMissingImports = "error"
+typeCheckingMode = "basic"
+venvPath = "/opt/homebrew/Caskroom/miniconda/base/envs"
+venv = "iskra"
