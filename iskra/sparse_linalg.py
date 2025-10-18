@@ -1,5 +1,6 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+import time
 from typing import Callable, Literal
 
 import numpy as np
@@ -95,6 +96,8 @@ class CholespyFactorAndSolve(torch.autograd.Function):
         b: torch.Tensor,
         x: torch.Tensor | None = None,
     ) -> tuple[CholeskySolverF | CholeskySolverD, torch.Tensor]:
+        if not mat.is_coalesced():
+            raise ValueError("Matrix not coalesced, please call .coalesce() first.")
         solver: CholeskySolverF | CholeskySolverD = make_solver(mat)
         b = b.contiguous()
         if x is None:
@@ -114,6 +117,8 @@ class CholespyFactorAndSolve(torch.autograd.Function):
 
         dg_dx = torch.zeros_like(forward_grad)
         ctx.solver.solve(forward_grad, dg_dx)
+        # print("forward_grad", forward_grad)
+        # print("dg_dx", dg_dx)
         if ctx.needs_input_grad[0]:
             # Compute masked outer product:
             # (dg/dx) @ x^T
@@ -194,69 +199,23 @@ def min_quadratic_energy(
     return result
 
 
-def shift_invert_power_method(
-    A: torch.Tensor,  # noqa: N803
-    M: torch.Tensor,  # noqa: N803
-    k: int = 1,
-    sigma: float = 0.0,
-    maxiter: int = 10,
-    tol: float = 1e-10,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    device = A.device
-    dtype = A.dtype
-    n = A.shape[0]
+def power_iteration(
+    a: torch.Tensor, x: torch.Tensor, m: torch.Tensor, sigma: float | None
+) -> torch.Tensor:
+    if sigma is not None:
+        evecs = cholespy_factor_and_solve(a - sigma * m, torch.sparse.mm(m, x))
+    else:
+        evecs = torch.sparse.mm(a, x)
+    evecs = torch.linalg.qr(evecs)[0]
+    m_evecs = torch.sparse.mm(a, evecs)
+    # evecs = evecs / torch.sqrt((evecs.conj() * m_evecs).sum(dim=0, keepdim=True).real)
+    dot = (x.conj() * m_evecs).sum(dim=0, keepdim=True).real
+    signs = 2 * (dot > 0).int() - 1
+    evecs = signs * evecs
 
-    evals = []
-    evecs = []
-
-    def b_inner(u, v):
-        return u.mT @ M @ v
-
-    def b_norm(v):
-        return torch.sqrt(torch.real(b_inner(v, v)))
-
-    for _ in range(k):
-        x = torch.randn([n, 1], device=device, dtype=dtype, requires_grad=True)
-
-        # M-orthogonalize against previous eigenvectors
-        for v in evecs:
-            x = x - v * b_inner(v, x)
-        x = x / b_norm(x)
-
-        for it in range(maxiter):
-            # shift-invert step, solve: (A - sigma M) z = M x
-            # z = A @ x
-            z = cholespy_factor_and_solve(A - sigma * M, M @ x, None)
-
-            # M-orthogonalize against previous eigenvectors
-            for v in evecs:
-                z = z - v * b_inner(v, z)
-
-            z_norm = b_norm(z)
-            if z_norm < tol:
-                break
-            x_new = z / z_norm
-
-            # Rayleigh quotient for generalized eigenvalue
-            num = x_new.mT @ A @ x_new
-            den = x_new.mT @ M @ x_new
-            lam = (num / den).item()
-
-            if torch.norm(x_new - x) < tol:
-                break
-            x = x_new
-
-        evals.append(lam)
-        evecs.append(x_new)
-
-    evecs = torch.cat(evecs, dim=1)
-    evals = torch.tensor(evals, device=device, dtype=dtype)
-
-    sort_idx = torch.argsort(torch.abs(evals - (sigma if sigma is not None else 0)))
-    evals = evals[sort_idx]
-    evecs = evecs[:, sort_idx]
-
-    return evals, evecs
+    # Shrink spectral radius:
+    lr = 0.1
+    return (1 - lr) * x + lr * evecs
 
 
 def power_iterations(
@@ -276,6 +235,9 @@ def power_iterations(
     if M is None:
         M = sp.eye(n, dtype=dtype, device=device)  # noqa: N806
 
+    # The following serves to make the gradients symmetric in the backward pass:
+    A = 0.5 * (A + A.mT).coalesce()  # noqa: N806
+
     # TODO: cholesky on M for non-diagonal M
     m_idcs = M.to_sparse_coo().indices()
     if (m_idcs[0] != m_idcs[1]).any():
@@ -286,14 +248,14 @@ def power_iterations(
 
     for it in range(maxiter):
         if sigma is not None:
-            z = cholespy_factor_and_solve(
-                A - sigma * M, torch.sparse.mm(M, evecs), None
-            )
+            z = cholespy_factor_and_solve(A - sigma * M, torch.sparse.mm(M, evecs))
         else:
             z = torch.sparse.mm(A, evecs)
         z, _ = torch.linalg.qr(z)
         # z = M_sqrt_inv @ z
-        z = z / torch.sqrt((z.conj() * (M @ z)).sum(dim=0, keepdim=True).real)
+        z = z / torch.sqrt(
+            (z.conj() * (torch.sparse.mm(M, z))).sum(dim=0, keepdim=True).real
+        )
 
         if torch.linalg.vector_norm(evecs - z).all() < tol:
             evecs = z
@@ -303,11 +265,53 @@ def power_iterations(
     # Rayleigh quotient for generalized eigenvalue
     evals = (evecs.conj() * torch.sparse.mm(A, evecs)).sum(-2)
 
-    sort_idx = torch.argsort(torch.abs(evals - (sigma if sigma is not None else 0)))
+    sort_idx = torch.argsort(-torch.abs(evals - (sigma if sigma is not None else 0)))
     evals = evals[sort_idx]
     evecs = evecs[:, sort_idx]
 
     return evals, evecs
+
+
+def make_power_iteration_vjp(
+    a: torch.Tensor, evecs: torch.Tensor, m: torch.Tensor, sigma: float | None
+) -> tuple[Callable[[torch.Tensor], tuple[torch.Tensor, ...]], ...]:
+    with torch.enable_grad():
+        a_g = a.clone().requires_grad_(True)
+        evecs_g = evecs.clone().requires_grad_(True)
+        evecs_out = power_iteration(a_g, evecs_g, m, sigma)
+
+        def vjp_evecs(z_grad: torch.Tensor) -> tuple[torch.Tensor, ...]:
+            return torch.autograd.grad(
+                (evecs_out,),
+                (evecs_g),
+                (z_grad,),
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=True,
+            )
+
+        def vjp_a(z_grad: torch.Tensor) -> tuple[torch.Tensor, ...]:
+            return torch.autograd.grad(
+                (evecs_out,),
+                (a_g),
+                (z_grad,),
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=True,
+            )
+
+    return vjp_evecs, vjp_a
+
+
+start = time.perf_counter()
+make_power_iteration_vjp = torch.compile(
+    make_power_iteration_vjp,
+    backend="inductor",
+)
+make_power_iteration_vjp(
+    torch.randn([20, 20]), torch.randn([20, 3]), torch.randn([20, 20]), None
+)
+print("Compiling VJP took:", time.perf_counter() - start)
 
 
 def fixed_point_solver(
@@ -327,6 +331,97 @@ def fixed_point_solver(
         #     print(torch.linalg.norm(z_prev - z))
     print(f"Converged after {i} iterations.")
     return z
+
+
+def gmres_solve(
+    f: Callable[[torch.Tensor], torch.Tensor],
+    b: torch.Tensor,
+    init: torch.Tensor,
+    maxiter: int,
+    tol: float,
+) -> torch.Tensor:
+    """Matrix-free GMRES solver for (I - J^T) u = b.
+
+    Arguments:
+        f (Callable[[torch.Tensor], torch.Tensor]): Computes J^T @ z  (vector-Jacobian product)
+        b (torch.Tensor): Right-hand side of linear system, same shape as u.
+        init (torch.Tensor): Initial guess for u.
+        maxiter (int): Maximum number of iterations for the solver.
+        tol (float): Minimum tolerance the solver needs to reach before exiting.
+
+    Returns:
+        (torch.Tensor): Solution to the linear system (I - J^T) u = b.
+    """
+    shape = b.shape
+    device, dtype = b.device, b.dtype
+
+    # Flatten all for GMRES math
+    res = b.flatten() - (init.flatten() - f(init).flatten())
+    res_norm = torch.norm(res)
+    if res_norm < tol:
+        return init
+
+    # Krylov basis and Hessenberg matrix
+    krylov_basis = [res / res_norm]
+    hessenberg = torch.zeros((maxiter + 1, maxiter), dtype=dtype, device=device)
+    g = torch.zeros((maxiter + 1,), dtype=dtype, device=device)
+    g[0] = res_norm
+
+    for k in range(maxiter):
+        q_k = krylov_basis[k].reshape(shape)
+        # Compute (I - J^T) z:
+        w = (q_k - f(q_k)).flatten()
+
+        # Modified Gram-Schmidt orthogonalization:
+        for i in range(k + 1):
+            hessenberg[i, k] = torch.dot(krylov_basis[i], w)
+            w -= hessenberg[i, k] * krylov_basis[i]
+
+        hessenberg[k + 1, k] = torch.norm(w)
+        if hessenberg[k + 1, k] > 0:
+            krylov_basis.append(w / hessenberg[k + 1, k])
+        else:
+            break
+
+        # Least-squares solve min ||beta e1 - H y||
+        hessenberg_k = hessenberg[: k + 2, : k + 1]
+        g_k = g[: k + 2]
+        y, *_ = torch.linalg.lstsq(hessenberg_k, g_k.unsqueeze(1))
+        y = y.squeeze(1)
+
+        # Residual norm estimate
+        res = torch.norm(g_k - hessenberg_k @ y)
+        if res < tol:
+            break
+
+    basis_mat = torch.stack(krylov_basis[: k + 1], dim=1)  # [dim, k + 1]
+    y, *_ = torch.linalg.lstsq(hessenberg[: k + 2, : k + 1], g[: k + 2].unsqueeze(1))
+    x_flat = init.flatten() + basis_mat @ y.squeeze(1)
+    return x_flat.reshape(shape)
+
+
+def estimate_spectral_radius(
+    f: Callable[[torch.Tensor], torch.Tensor], init: torch.Tensor, maxiter: int
+) -> torch.Tensor:
+    """Estimate spectral radius (max |evals|) of matrix J (given as callable f).
+
+    Uses the power method J^T J, via J^T(J v).
+
+    Args:
+        f (Callable[[torch.Tensor], torch.Tensor]): Function that computes J @ v.
+        init (torch.Tensor): Initial guess for largest eigenvector.
+        maxiter (int): Maximum number of iterations for the solver.
+
+    Returns:
+        torch.Tensor: Spectral radius, i.e., the maximum absolute eigenvalue.
+    """
+    v = init / init.norm()
+    for _ in range(maxiter):
+        w = f(f(v))
+        v = w / (w.norm() + 1e-30)
+    w = f(f(v))
+    rho_est = torch.sqrt((v * w).sum().abs())
+    return rho_est
 
 
 class Eigsh(torch.autograd.Function):
@@ -366,9 +461,9 @@ class Eigsh(torch.autograd.Function):
                 A_sp = A_sp.toarray()  # noqa: N806
                 M_sp = M_sp.toarray()  # noqa: N806
                 evals, evecs = scipy.linalg.eigh(A_sp, b=M_sp)
-                sort_idx = np.argsort(-np.abs(evals))
-                evals = evals[sort_idx][:k]
-                evecs = evecs[:, sort_idx][:, :k]
+            sort_idx = np.argsort(-np.abs(evals))
+            evals = evals[sort_idx][:k]
+            evecs = evecs[:, sort_idx][:, :k]
             return torch.tensor(evals.real, dtype=dtype, device=device), torch.tensor(
                 evecs.real, dtype=dtype, device=device
             )
@@ -443,26 +538,10 @@ class Eigsh(torch.autograd.Function):
                     grad_vals = grad_vals.sum(-1)
                 grad_a = torch.sparse_coo_tensor(a.indices(), grad_vals, [n, n])
             elif ctx.adjoint in ("dodik-invert", "dodik-fixedpoint"):
-                if ctx.sigma is not None:
-                    solver = make_solver(a - ctx.sigma * m)
-
-                def power_iteration(a, x):
-                    if ctx.sigma is not None:
-                        evecs = cholespy_solve(solver, torch.sparse.mm(m, x))
-                    else:
-                        evecs = torch.sparse.mm(a, x)
-                        # evecs = a @ x
-                    evecs = torch.linalg.qr(evecs)[0]
-                    signs = (
-                        (torch.sum(evecs * x, dim=0, keepdim=True) > 0).int() * 2 - 1
-                    ).float()
-                    evecs = evecs * signs
-                    return evecs
-
                 if ctx.adjoint == "dodik-invert":
 
                     def implicit_func(a, x):
-                        return power_iteration(a, x) - x
+                        return power_iteration(a, x, m, ctx.sigma) - x
 
                     # Test full formula:
                     df_da = torch.func.jacrev(implicit_func, 0)
@@ -474,26 +553,31 @@ class Eigsh(torch.autograd.Function):
                     grad_a = (grad_evecs.flatten() @ dx_da_mat).reshape(n, n)
 
                 elif ctx.adjoint == "dodik-fixedpoint":
-                    with torch.enable_grad():
-                        a_g = a.clone().requires_grad_(True)
-                        evecs_g = evecs.clone().requires_grad_(True)
-                        evecs_out = power_iteration(a_g, evecs_g)
+                    # TODO: eigenvalue loss
 
-                        def vjp(z_grad: torch.Tensor):
-                            return torch.autograd.grad(
-                                (evecs_out,),
-                                (a_g, evecs_g),
-                                (z_grad,),
-                                retain_graph=True,
-                                create_graph=False,
-                                allow_unused=True,
-                            )
+                    init = torch.randn_like(evecs)
 
-                        init = torch.randn_like(evecs)
-                        u = fixed_point_solver(
-                            lambda z: grad_evecs + vjp(z)[1], init, ctx.maxiter, ctx.tol
-                        )
-                    grad_a = vjp(u)[0]
+                    # rho = estimate_spectral_radius(lambda z: vjp(z)[1], init, 10)
+                    # print("RHO", rho)
+
+                    # print(init, power_iteration(a, init), vjp(init)[1])
+                    # print(vjp(init)[1])
+                    # u = fixed_point_solver(
+                    #     lambda z: grad_evecs + vjp(z)[1], init, ctx.maxiter, ctx.tol
+                    # )
+
+                    start = time.perf_counter()
+                    vjp_evecs, vjp_a = make_power_iteration_vjp(a, evecs, m, ctx.sigma)
+                    print("Making VJP took:", time.perf_counter() - start)
+                    u = gmres_solve(
+                        lambda z: vjp_evecs(z)[0],
+                        grad_evecs,
+                        init,
+                        maxiter=ctx.maxiter,
+                        tol=ctx.tol,
+                    )
+
+                grad_a = vjp_a(u)[0]
 
         if grad_a is not None:
             # Ensure symmetry of gradients:
@@ -506,7 +590,7 @@ def eigsh(
     M: torch.Tensor | None = None,  # noqa: N803
     k: int = 1,
     sigma: float | None = None,
-    maxiter: int = 30,
+    maxiter: int = 100,
     tol: float = 0,
     adjoint: Literal[
         "unroll", "individual", "truncate", "dodik-fixedpoint", "dodik-invert"
