@@ -15,9 +15,6 @@
     "python.testing.pytestArgs": [
         "tests"
     ],
-    "basedpyright.analysis.inlayHints.variableTypes": false,
-    "basedpyright.analysis.inlayHints.callArgumentNames": false,
-    "basedpyright.analysis.inlayHints.functionReturnTypes": false,
     "ruff.configuration": "pyproject.toml",
     "ty.experimental.completions.enable": false,
     "python.testing.unittestEnabled": false,
