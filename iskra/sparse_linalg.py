@@ -305,11 +305,7 @@ def make_power_iteration_vjp(
 
 start = time.perf_counter()
 make_power_iteration_vjp = torch.compile(
-    make_power_iteration_vjp,
-    backend="inductor",
-)
-make_power_iteration_vjp(
-    torch.randn([20, 20]), torch.randn([20, 3]), torch.randn([20, 20]), None
+    make_power_iteration_vjp, backend="inductor", dynamic=True
 )
 print("Compiling VJP took:", time.perf_counter() - start)
 

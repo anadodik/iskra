@@ -103,9 +103,15 @@ def get_subfaces(
         n_subfaces = len(idcs)
         subsimplex_list = [faces[:, nbh_idx] for nbh_idx in idcs]
         subfaces = torch.stack(subsimplex_list, -2)
-    subface_flipped = simplex_parity(subfaces)
-    subface_sign = torch.where(subface_flipped.bool(), -1.0, 1.0)
-    subface_sign = subface_sign.reshape(-1, n_subfaces)
+
+    # Is simplex pairity really what we want here?
+    if face_dim == 1:  # whyyyyyyyy is this necessary?!?!?!?!!?
+        ones = torch.ones([faces.shape[0]], device=faces.device)
+        subface_sign = torch.stack([ones, -ones], -1)
+    else:
+        subface_flipped = simplex_parity(subfaces)
+        subface_sign = torch.where(subface_flipped.bool(), -1.0, 1.0)
+        subface_sign = subface_sign.reshape(-1, n_subfaces)
 
     subfaces = torch.flatten(subfaces, -3, -2)
     subfaces, _ = torch.sort(subfaces, -1)
@@ -168,13 +174,6 @@ def assemble_incidence_matrix(
     idcs = torch.stack([i, j])
     if signed:
         values = subface_sign.mT.flatten()
-        if face_dim == 1:  # whyyyyyyyy is this necessary?!?!?!?!!?
-            values = torch.cat(
-                [
-                    -torch.ones([n_faces], device=device),
-                    torch.ones([n_faces], device=device),
-                ]
-            )
     else:
         values = torch.ones_like(subface_sign.mT.flatten())
     return torch.sparse_coo_tensor(idcs, values, [n_faces, n_subfaces]).coalesce()
@@ -276,7 +275,9 @@ def flip_edges() -> torch.Tensor:
 
 def ordered_boundary_edges(edges: torch.Tensor) -> list[torch.Tensor]:
     device = edges.device
-    max_vertex = edges.max().cpu().item()
+    max_vertex = -1
+    if edges.numel() > 0:
+        max_vertex = edges.max().cpu().item()
     graph = nx.from_scipy_sparse_array(
         scipy.sparse.coo_array(
             (
