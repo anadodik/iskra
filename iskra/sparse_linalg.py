@@ -190,8 +190,9 @@ def min_quadratic_energy(
             solver.solve(new_rhs.detach().cpu().numpy()), device=rhs.device
         )
     else:
-        solver = CholeskySolver(system_uu)
-        unknown = solver(new_rhs)
+        unknown = cholespy_factor_and_solve(system_uu, new_rhs)
+        # solver = CholeskySolver(system_uu)
+        # unknown = solver(new_rhs)
 
     result = torch.zeros_like(rhs)
     result[unknown_idx] = unknown
@@ -279,6 +280,7 @@ def make_power_iteration_vjp(
         a_g = a.clone().requires_grad_(True)
         evecs_g = evecs.clone().requires_grad_(True)
         evecs_out = power_iteration(a_g, evecs_g, m, sigma)
+        evecs_out = evecs_out - evecs_g
 
         def vjp_evecs(z_grad: torch.Tensor) -> tuple[torch.Tensor, ...]:
             return torch.autograd.grad(
@@ -352,7 +354,7 @@ def gmres_solve(
     device, dtype = b.device, b.dtype
 
     # Flatten all for GMRES math
-    res = b.flatten() - (init.flatten() - f(init).flatten())
+    res = b.flatten() - f(init).flatten()
     res_norm = torch.norm(res)
     if res_norm < tol:
         return init
@@ -366,7 +368,7 @@ def gmres_solve(
     for k in range(maxiter):
         q_k = krylov_basis[k].reshape(shape)
         # Compute (I - J^T) z:
-        w = (q_k - f(q_k)).flatten()
+        w = f(q_k).flatten()
 
         # Modified Gram-Schmidt orthogonalization:
         for i in range(k + 1):
@@ -385,14 +387,15 @@ def gmres_solve(
         y, *_ = torch.linalg.lstsq(hessenberg_k, g_k.unsqueeze(1))
         y = y.squeeze(1)
 
-        # Residual norm estimate
         res = torch.norm(g_k - hessenberg_k @ y)
         if res < tol:
             break
+    print(f"GMRES exiting after {k} iterations, residual: {res}.")
 
     basis_mat = torch.stack(krylov_basis[: k + 1], dim=1)  # [dim, k + 1]
     y, *_ = torch.linalg.lstsq(hessenberg[: k + 2, : k + 1], g[: k + 2].unsqueeze(1))
     x_flat = init.flatten() + basis_mat @ y.squeeze(1)
+    # res = torch.norm(b.flatten() - f(x_flat.reshape(shape)).flatten())
     return x_flat.reshape(shape)
 
 
@@ -505,7 +508,7 @@ class Eigsh(torch.autograd.Function):
                 if grad_vals.ndim == 2:
                     grad_vals = grad_vals.sum(-1)
                 grad_a = torch.sparse_coo_tensor(a.indices(), grad_vals, [n, n])
-            if ctx.adjoint == "individual":
+            elif ctx.adjoint == "individual":
                 dg_dx = torch.zeros_like(evecs)
                 eye = sp.eye(a.shape[0], device=a.device, dtype=dtype)
                 lhs_i = torch.arange(n, device=device, dtype=torch.int64)
@@ -533,45 +536,44 @@ class Eigsh(torch.autograd.Function):
                 if grad_vals.ndim == 2:
                     grad_vals = grad_vals.sum(-1)
                 grad_a = torch.sparse_coo_tensor(a.indices(), grad_vals, [n, n])
-            elif ctx.adjoint in ("dodik-invert", "dodik-fixedpoint"):
-                if ctx.adjoint == "dodik-invert":
+            elif ctx.adjoint == "dodik-invert":
 
-                    def implicit_func(a, x):
-                        return power_iteration(a, x, m, ctx.sigma) - x
+                def implicit_func(a, x):
+                    return power_iteration(a, x, m, ctx.sigma) - x
 
-                    # Test full formula:
-                    df_da = torch.func.jacrev(implicit_func, 0)
-                    df_dx = torch.func.jacrev(implicit_func, 1)
+                # Test full formula:
+                df_da = torch.func.jacrev(implicit_func, 0)
+                df_dx = torch.func.jacrev(implicit_func, 1)
 
-                    df_da_mat = df_da(a, evecs).reshape(n * k, n * n)
-                    df_dx_mat = df_dx(a, evecs).reshape(n * k, n * k)
-                    dx_da_mat = -torch.linalg.solve(df_dx_mat, df_da_mat)
-                    grad_a = (grad_evecs.flatten() @ dx_da_mat).reshape(n, n)
+                df_da_mat = df_da(a, evecs).reshape(n * k, n * n)
+                df_dx_mat = df_dx(a, evecs).reshape(n * k, n * k)
+                dx_da_mat = -torch.linalg.solve(df_dx_mat, df_da_mat)
+                grad_a = (grad_evecs.flatten() @ dx_da_mat).reshape(n, n)
 
-                elif ctx.adjoint == "dodik-fixedpoint":
-                    # TODO: eigenvalue loss
+            elif ctx.adjoint == "dodik-fixedpoint":
+                # TODO: eigenvalue loss
 
-                    init = torch.randn_like(evecs)
+                init = torch.randn_like(evecs)
 
-                    # rho = estimate_spectral_radius(lambda z: vjp(z)[1], init, 10)
-                    # print("RHO", rho)
+                # rho = estimate_spectral_radius(lambda z: vjp(z)[1], init, 10)
+                # print("RHO", rho)
 
-                    # print(init, power_iteration(a, init), vjp(init)[1])
-                    # print(vjp(init)[1])
-                    # u = fixed_point_solver(
-                    #     lambda z: grad_evecs + vjp(z)[1], init, ctx.maxiter, ctx.tol
-                    # )
+                # print(init, power_iteration(a, init), vjp(init)[1])
+                # print(vjp(init)[1])
+                # u = fixed_point_solver(
+                #     lambda z: grad_evecs + vjp(z)[1], init, ctx.maxiter, ctx.tol
+                # )
 
-                    start = time.perf_counter()
-                    vjp_evecs, vjp_a = make_power_iteration_vjp(a, evecs, m, ctx.sigma)
-                    print("Making VJP took:", time.perf_counter() - start)
-                    u = gmres_solve(
-                        lambda z: vjp_evecs(z)[0],
-                        grad_evecs,
-                        init,
-                        maxiter=ctx.maxiter,
-                        tol=ctx.tol,
-                    )
+                start = time.perf_counter()
+                vjp_evecs, vjp_a = make_power_iteration_vjp(a, evecs, m, ctx.sigma)
+                print("Making VJP took:", time.perf_counter() - start)
+                u = -gmres_solve(
+                    lambda z: vjp_evecs(z)[0],
+                    grad_evecs,
+                    init,
+                    maxiter=ctx.maxiter,
+                    tol=ctx.tol,
+                )
 
                 grad_a = vjp_a(u)[0]
 
@@ -587,7 +589,7 @@ def eigsh(
     k: int = 1,
     sigma: float | None = None,
     maxiter: int = 100,
-    tol: float = 0,
+    tol: float = 1e-8,
     adjoint: Literal[
         "unroll", "individual", "truncate", "dodik-fixedpoint", "dodik-invert"
     ] = "individual",

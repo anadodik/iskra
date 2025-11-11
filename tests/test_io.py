@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from iskra.io.io import _load_io_ext
+from iskra.io.io import load_obj
 
 
 def test_load_obj() -> None:

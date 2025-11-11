@@ -159,6 +159,9 @@ if __name__ == "__main__":
         ps_mesh.add_parameterization_quantity(
             "Param SymmDir", uv_opt.detach().numpy(), enabled=True
         )
+        ps_edges = ps.register_curve_network(
+            "edges", verts.numpy(), edges.numpy(), enabled=False, radius=0.01
+        )
 
         ps_param_mesh = ps.register_surface_mesh(
             "UV Mesh", uv_opt.detach().numpy(), faces.numpy(), edge_width=1
@@ -166,6 +169,12 @@ if __name__ == "__main__":
         # ps_param_mesh.add_scalar_quantity(
         #     "energy", energy.detach().numpy(), defined_on="faces", enabled=True
         # )
+        ve = face_index(verts_opt, edges).detach()
+        ps_edges.add_scalar_quantity(
+            "metric",
+            torch.linalg.vector_norm(ve[..., 1, :] - ve[..., 0, :], dim=-1).numpy(),
+            defined_on="edges",
+        )
 
         optimizing = False
 
@@ -193,6 +202,14 @@ if __name__ == "__main__":
                     )
                     ps_mesh.add_parameterization_quantity(
                         "rand param", uv_opt.detach().numpy(), enabled=True
+                    )
+                    ve = face_index(verts_opt, edges).detach()
+                    ps_edges.add_scalar_quantity(
+                        "metric",
+                        torch.linalg.vector_norm(
+                            ve[..., 1, :] - ve[..., 0, :], dim=-1
+                        ).numpy(),
+                        defined_on="edges",
                     )
 
         ps.set_user_callback(callback)

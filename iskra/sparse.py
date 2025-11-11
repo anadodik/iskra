@@ -24,6 +24,18 @@ def diag(values: torch.Tensor) -> torch.Tensor:
     return torch.sparse_coo_tensor(ii, values, size=[n, n]).coalesce()
 
 
+def get_diag(mat: torch.Tensor) -> torch.Tensor:
+    assert mat.ndim >= 2
+    assert mat.shape[-1] == mat.shape[-2]
+    n = mat.shape[0]
+    idcs = mat.indices()
+    values = mat.values()
+    diag_mask = idcs[-1] == idcs[-2]
+    return torch.sparse_coo_tensor(
+        idcs[:-1, diag_mask], values[diag_mask], size=mat.shape[:-1]
+    ).coalesce()
+
+
 def scipy_to_torch(
     x: scipy.sparse.sparray, device: torch.device | str = "cpu"
 ) -> torch.Tensor:

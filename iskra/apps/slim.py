@@ -42,6 +42,11 @@ def symmetric_dirichlet(
     return energy
 
 
+symmetric_dirichlet = torch.compile(
+    torch.vmap(symmetric_dirichlet, (0, 0, 0)), fullgraph=True, dynamic=True
+)
+
+
 # def symmetric_dirichlet_2(
 #     rest_local: torch.Tensor, param_triangles: torch.Tensor, rest_areas: torch.Tensor
 # ) -> torch.Tensor:
@@ -73,7 +78,7 @@ if __name__ == "__main__":
     mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices
 
-    # Assome one boundary loop, and take first vertex of each edge:
+    # Assume one boundary loop, and take first vertex of each edge:
     bdr = ordered_boundary_edges(boundary(faces))[0][:, 0]
     n_bdr_verts = bdr.shape[0]
     t = torch.linspace(
@@ -104,6 +109,10 @@ if __name__ == "__main__":
     lr = 100
     optimizer = torch.optim.SGD([uv_opt], lr=lr)
     h1_solver = CholeskySolver(mass + 0.5 * lap)
+
+    param_local = uv_local(uv_opt, faces)
+    energy = symmetric_dirichlet(rest_local, param_local, rest_areas)
+    quit()
 
     def step_fn():
         param_local = uv_local(uv_opt, faces)
