@@ -147,9 +147,7 @@ def signed_svd(
     mat: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     u, s, vh = torch.linalg.svd(mat)
-    repeated_count = (
-        (s[..., 0] == s[..., 1]) | (s[..., 1] == s[..., 2])
-    ).count_nonzero()
+    repeated_count = (s[..., 1:] == s[..., :-1]).any(-1).count_nonzero()
     if repeated_count > 0:
         print(
             f"Warning: detected {repeated_count} matrices with repeated singular values."
