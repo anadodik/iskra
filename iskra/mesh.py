@@ -249,6 +249,10 @@ class Mesh(torch.nn.Module):
     def n_vertices(self) -> int:
         return self.geom.n_vertices
 
+    @property
+    def n_faces(self) -> int:
+        return self.topo.n_faces
+
     def deduplicate_vertices(
         self, vertex_values: list[torch.Tensor] | None = None
     ) -> "tuple[Mesh, torch.Tensor] | tuple[Mesh, torch.Tensor, list[torch.Tensor]]":

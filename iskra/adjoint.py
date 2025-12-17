@@ -1,6 +1,6 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
-from typing import Any, Callable, Iterable, Literal, cast
+from typing import Any, Callable, Literal, Sequence, cast
 
 import torch
 
@@ -9,21 +9,25 @@ from iskra.sparse_linalg import gmres_solve
 
 def make_vjp[T, **P](
     fn: Callable[P, T],
-    iterate_in: int = 0,
-    iterate_out: int = 0,
+    iterates: Sequence[tuple[int, int]] | tuple[int, int] = (0, 0),
     argnums: tuple[int, ...] = (1,),
     *args: P.args,
     **kwargs: P.kwargs,
 ) -> tuple[Callable[[torch.Tensor], tuple[torch.Tensor, ...]], ...]:
+    if not isinstance(iterates[0], Sequence):
+        iterates = [cast(tuple[int, int], iterates)]
+    iterates = cast(Sequence[tuple[int, int]], iterates)
+
     args_list: list[Any] = list(args)
     with torch.enable_grad():
-        arg = args_list[iterate_in]
-        if not isinstance(arg, torch.Tensor):
-            raise ValueError(
-                f"Requested gradient w.r.t. iterate at position {iterate_in}, "
-                f"but passed value is not a Tensor. Got {type(arg)} instead."
-            )
-        args_list[iterate_in] = arg.clone().requires_grad_(True)
+        for iterate_in, _ in iterates:
+            arg = args_list[iterate_in]
+            if not isinstance(arg, torch.Tensor):
+                raise ValueError(
+                    f"Requested gradient w.r.t. iterate at position {iterate_in}, "
+                    f"but passed value is not a Tensor. Got {type(arg)} instead."
+                )
+            args_list[iterate_in] = arg.clone().requires_grad_(True)
         params = []
         for arg_i in argnums:
             arg = args_list[arg_i]
@@ -35,16 +39,19 @@ def make_vjp[T, **P](
             arg = arg.clone().requires_grad_(True)
             args_list[arg_i] = arg
             params.append(arg)
-        outputs = fn(*args_list, **kwargs)
-        # deformed_out = deformed_out - deformed_g
-        before = args_list[iterate_in]
-        after = cast(tuple[Any, ...], outputs)[iterate_out]
-        iterate_diff = after - before
+
+        outputs = cast(tuple[Any, ...], fn(*args_list, **kwargs))
+
+        befores = tuple(args_list[iterate[0]] for iterate in iterates)
+        afters = tuple(outputs[iterate[1]] for iterate in iterates)
+        iterate_diff = torch.cat(
+            [(after - before).flatten() for before, after in zip(befores, afters)]
+        )
 
         def vjp_iterate(z_grad: torch.Tensor) -> tuple[torch.Tensor, ...]:
             return torch.autograd.grad(
                 (iterate_diff,),
-                (before,),
+                befores,
                 (z_grad,),
                 retain_graph=True,
                 create_graph=False,
@@ -55,7 +62,7 @@ def make_vjp[T, **P](
             return torch.autograd.grad(
                 (iterate_diff,),
                 params,
-                (z_grad,),
+                (z_grad.flatten(),),
                 retain_graph=True,
                 create_graph=False,
                 allow_unused=True,
@@ -66,8 +73,7 @@ def make_vjp[T, **P](
 
 def make_solver_layer[T, **P](
     fn: Callable[P, T],
-    iterate_in: int = 0,
-    iterate_out: int = 0,
+    iterates: Sequence[tuple[int, int]] | tuple[int, int] = (0, 0),
     argnums: int | tuple[int, ...] = 1,
     fwd_method: Literal["fixed-point"] | Callable[P, T] = "fixed-point",
     fwd_max_iter: int = 90,
@@ -76,7 +82,11 @@ def make_solver_layer[T, **P](
     bwd_max_iter: int = 200,
     bwd_eps: float = 1e-12,
 ) -> Callable[P, T]:
-    if not isinstance(argnums, Iterable):
+    if not isinstance(iterates[0], Sequence):
+        iterates = [cast(tuple[int, int], iterates)]
+    iterates = cast(Sequence[tuple[int, int]], iterates)
+
+    if not isinstance(argnums, Sequence):
         argnums = (argnums,)
 
     class SolverFn(torch.autograd.Function):
@@ -102,12 +112,18 @@ def make_solver_layer[T, **P](
         def forward(*args: P.args, **kwargs: P.kwargs) -> T:
             args_list: list[Any] = list(args)
             for _ in range(fwd_max_iter):
-                outputs = fn(*args_list, **kwargs)
-                before = args_list[iterate_in]
-                after = cast(tuple[Any, ...], outputs)[iterate_out]
+                outputs = cast(tuple[Any, ...], fn(*args_list, **kwargs))
+                before = torch.cat(
+                    [args_list[iterate[0]].flatten() for iterate in iterates]
+                )
+                after = torch.cat(
+                    [outputs[iterate[1]].flatten() for iterate in iterates]
+                )
                 with torch.no_grad():
-                    difference = torch.linalg.vector_norm(before - after, axis=-1).max()
-                    args_list[iterate_in] = after
+                    # TODO: figure out criterion
+                    difference = torch.norm((before - after).flatten())
+                    for iterate in iterates:
+                        args_list[iterate[0]] = outputs[iterate[1]]
                     if difference < fwd_eps:
                         break
             print("Final error: ", difference.cpu().detach().item())
@@ -122,17 +138,18 @@ def make_solver_layer[T, **P](
             in_out = list(ctx.saved_tensors)
             inputs = in_out[: ctx.n_inputs]
             outputs = in_out[-ctx.n_outputs :]
-            grad_iterate = grads_out[iterate_out]
+            grad_iterate = torch.cat(
+                [grads_out[iterate[1]].flatten() for iterate in iterates]
+            )
             if grad_iterate is None or len(argnums) == 0:
                 return result
-            inputs[iterate_in] = outputs[iterate_out]
-            vjp_iterate, vjp_params = make_vjp(
-                fn, iterate_in, iterate_out, argnums, *inputs
-            )
+            for iterate in iterates:
+                inputs[iterate[0]] = outputs[iterate[1]]
+            vjp_iterate, vjp_params = make_vjp(fn, iterates, argnums, *inputs)
             init = torch.randn_like(grad_iterate)
             if bwd_method == "gmres":
                 dl_df = -gmres_solve(
-                    lambda z: vjp_iterate(z)[0],
+                    lambda z: torch.cat([grad.flatten() for grad in vjp_iterate(z)]),
                     grad_iterate,
                     init,
                     maxiter=bwd_max_iter,
@@ -140,7 +157,9 @@ def make_solver_layer[T, **P](
                 )
             else:
                 raise ValueError(f"Unrecognized backwards solver {bwd_method}")
-            gmres_error = torch.norm((grad_iterate - vjp_iterate(-dl_df)[0]).flatten())
+            gmres_error = torch.norm(
+                (grad_iterate - vjp_iterate(-dl_df)[0].flatten()).flatten()
+            )
             print(f"GMRES Error: {gmres_error.item()}")
             grad_param = vjp_params(dl_df)
             for i, argnum in enumerate(argnums):
@@ -161,6 +180,7 @@ def compute_numerical_jacobian[T, **P](
 ) -> torch.Tensor:
     args_list = list(args)
     arg = args[argnum]
+    print(arg)
     if not isinstance(arg, torch.Tensor):
         raise ValueError(
             f"Requested numerical gradient w.r.t. parameter at position {argnum}, "

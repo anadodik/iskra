@@ -353,7 +353,6 @@ def gmres_solve(
     shape = b.shape
     device, dtype = b.device, b.dtype
 
-    # Flatten all for GMRES math
     res = b.flatten() - f(init).flatten()
     res_norm = torch.norm(res)
     if res_norm < tol:

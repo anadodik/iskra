@@ -351,3 +351,14 @@ def typed[**P, R](func: Callable[P, R]) -> Callable[P, R]:
             raise error
 
     return decorator
+
+
+mat_idcs = torch.tensor([[0, 0], [0, 1], [1, 0], [1, 1]]).T
+mat_0_idcs = torch.cat([torch.full([mat_idcs.shape[1]], 0)[None, :], mat_idcs])
+mat_1_idcs = torch.cat([torch.full([mat_idcs.shape[1]], 1)[None, :], mat_idcs])
+tensor_idcs = torch.cat([mat_0_idcs, mat_1_idcs], -1)
+mat_0_vals = torch.full([mat_idcs.shape[1]], 2.0)
+mat_1_vals = torch.full([mat_idcs.shape[1]], 3.0)
+tensor_vals = torch.cat([mat_0_vals, mat_1_vals])
+print(tensor_idcs)
+print(torch.sparse_coo_tensor(tensor_idcs, tensor_vals))

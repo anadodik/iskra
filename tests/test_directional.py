@@ -19,12 +19,7 @@ from iskra.topology import edge_flaps
 @pytest.fixture
 def no_boundary() -> tuple[torch.Tensor, torch.Tensor]:
     verts = torch.tensor(
-        [
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0],
-            [0.0, 0.0, 1.0],
-        ]
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
     )
     faces = torch.tensor(
         [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]],

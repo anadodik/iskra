@@ -1,6 +1,7 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
 from functools import reduce
+from typing import cast
 
 import numpy as np
 import scipy.sparse
@@ -140,6 +141,38 @@ def zero_slice(
     x: torch.Tensor, *indices: slice | int | tuple[int, ...]
 ) -> torch.Tensor:
     return fill_slice(x, 0, *indices)
+
+
+def ravel_indices(
+    indices: torch.Tensor, shape: torch.Size | tuple[int, ...]
+) -> torch.Tensor:
+    linear: torch.Tensor = cast(torch.Tensor, 0)
+    stride = 1
+    for i, s in zip(reversed(indices), reversed(shape)):
+        linear += i * stride
+        stride *= s
+    return linear
+
+
+def unravel_index(
+    linear: torch.Tensor, shape: torch.Size | tuple[int, ...]
+) -> torch.Tensor:
+    linear = linear.clone()
+    idx = []
+    for s in reversed(shape):
+        idx.append(linear % s)
+        linear = linear // s
+    return torch.stack(tuple(reversed(idx)))
+
+
+def reshape(x: torch.Tensor, *shape: int) -> torch.Tensor:
+    assert len(x.shape) == 2, x.shape[0] == x.shape[1]
+    x = x.coalesce()
+    indices = x.indices()
+    values = x.values()
+    new_indices = unravel_index(ravel_indices(indices, x.shape), shape)
+
+    return torch.sparse_coo_tensor(new_indices, values, size=[*shape]).coalesce()
 
 
 def repdiag(x: torch.Tensor, n_reps: int) -> torch.Tensor:

@@ -17,7 +17,7 @@ from iskra.adjoint import (
 from iskra.dec import d_01, d_10, laplacian
 from iskra.geometry import cotan_weights
 from iskra.mesh import Mesh
-from iskra.signed_svd import signed_svd
+from iskra.signed_svd import closest_rot_3x3, polar_3x3, signed_svd
 from iskra.sparse_linalg import gmres_solve, min_quadratic_energy
 from iskra.topology import boundary, face_index, get_subfaces, reduce_on_subface
 
@@ -32,10 +32,11 @@ def arap_step(verts_deformed, verts_rest, cots, halfedges, lap, bc_idx, bc_vals)
     covs = cots[..., None, None] * vecs[..., None, :] * vecs_deformed[..., :, None]
 
     vert_covs = reduce_on_subface(covs, halfedges[:, 0:1], n_vertices, "sum")
-    vert_u, _, vert_vt = signed_svd(vert_covs)
-    vert_rot = vert_vt.mT @ vert_u.mT
+    vert_rot = closest_rot_3x3(vert_covs)
+    # vert_u, _, vert_vt = signed_svd(vert_covs)
+    # vert_rot = vert_vt.mT @ vert_u.mT
 
-    halfedge_rot = face_index(vert_rot, halfedges).mean(1)
+    halfedge_rot = face_index(vert_rot.mT, halfedges).mean(1)
     rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
 
     rhs = reduce_on_subface(rotated_halfedge_vecs, halfedges[:, 0:1], n_vertices, "sum")
@@ -67,8 +68,9 @@ def arap_step(
     )
 
     vert_covs = reduce_on_subface(halfedge_covs, halfedges[:, 0:1], n_vertices, "sum")
-    vert_u, _, vert_vt = signed_svd(vert_covs)
-    vert_rot = vert_vt.mT @ vert_u.mT
+    # vert_u, _, vert_vt = signed_svd(vert_covs)
+    # vert_rot = vert_vt.mT @ vert_u.mT
+    vert_rot = closest_rot_3x3(vert_covs).mT
     # Uncomment to debug SVD:
     # vert_rot = vert_covs * 0.0 + torch.eye(3, dtype=vert_u.dtype)[None, :, :].expand(
     #     n_vertices, -1, -1
@@ -102,42 +104,25 @@ def arap_solve(
     lap: torch.Tensor,
     bc_idx: torch.Tensor,
     bc_vals: torch.Tensor,
-    max_iter: int = 80,
+    max_iter: int = 100,
     eps: float = 1e-12,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     solver = make_solver_layer(
-        arap_step, 0, 0, (2, 4, 6), max_iter=max_iter, eps=eps, bwrd_method="gmres"
+        arap_step,
+        [(0, 0)],
+        (2, 4, 6),
+        fwd_method="fixed-point",
+        fwd_max_iter=max_iter,
+        fwd_eps=eps,
+        bwd_method="gmres",
+        bwd_max_iter=200,
+        bwd_eps=1e-12,
     )
 
     init = verts.clone()
     # TODO: Next line only necessary because of bad gradients with identity matrix?
     init[bc_idx] = bc_vals
     return solver(init, verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals)
-
-
-def make_arap_vjp(
-    deformed: torch.Tensor,
-    rest: torch.Tensor,
-    halfedge_weights: torch.Tensor,
-    halfedges: torch.Tensor,
-    lap: torch.Tensor,
-    bc_idx: torch.Tensor,
-    bc_vals: torch.Tensor,
-) -> tuple[Callable[[torch.Tensor], tuple[torch.Tensor, ...]], ...]:
-    vjp_deformed, vjp_bc_verts = make_vjp(
-        arap_step,
-        0,
-        0,
-        (-1,),
-        deformed,
-        rest,
-        halfedge_weights,
-        halfedges,
-        lap,
-        bc_idx,
-        bc_vals,
-    )
-    return vjp_deformed, vjp_bc_verts
 
 
 _MESH_HANDLES = {
@@ -152,10 +137,10 @@ _MESH_HANDLES = {
 def main(mesh_path: Path):
     # TODO: we should differentiate into cot weights to get artistic control
     # over deformations!
+    # TODO: inverse rendering + video diffusion guidance
     # TODO: to_oriented? to_half_edge?
     # TODO: How to nicely reduce half-edges?
     # TODO: These cannot be actual half-edges from faces because of boundaries:
-    # TODO: Turn into tests:
 
     global optimizing, optim_step, deformed
 
@@ -205,37 +190,6 @@ def main(mesh_path: Path):
         bc_vals,
     )
     num_grad = (grad_deformed.flatten() @ num_jac).reshape(*bc_vals.shape)
-    print("NUM JACOBIAN:\n", num_jac)
-
-    jac_verts, jac_bc = compute_jacobians(
-        arap_step,
-        0,
-        0,
-        6,
-        deformed,
-        verts,
-        halfedge_weights,
-        halfedges,
-        lap,
-        bc_idx,
-        bc_vals,
-    )
-
-    print("JACOBIAN VERTS:\n", jac_verts)
-    print("JACOBIAN BC:\n", jac_bc)
-    print("JACOBIAN FULL:\n", -torch.linalg.solve(jac_verts, jac_bc))
-
-    vjp_deformed, vjp_bc_verts = make_arap_vjp(
-        deformed, verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals
-    )
-    init = torch.randn_like(deformed)
-    dl_df = -gmres_solve(
-        lambda z: vjp_deformed(z)[0], grad_deformed, init, maxiter=200, tol=1e-12
-    )
-    print(
-        "AHHHH", torch.norm((grad_deformed - vjp_deformed(-dl_df)[0]).flatten()).item()
-    )
-    grad_bc = vjp_bc_verts(dl_df)[0]
 
     arap_data_igl = igl.ARAPData()
     arap_data_igl.energy = igl.ARAPEnergyType.ARAP_ENERGY_TYPE_SPOKES
@@ -278,8 +232,6 @@ def main(mesh_path: Path):
         ps_mesh.add_vector_quantity(
             "grad_deformed", grad_deformed, length=0.15, enabled=True
         )
-        ps_mesh.add_vector_quantity("dl_df", dl_df, enabled=False, length=0.15)
-        ps_cloud.add_vector_quantity("grad_bc", grad_bc, enabled=True, length=0.15)
         ps_cloud.add_vector_quantity("num_grad_bc", num_grad, enabled=True, length=0.15)
         ps_cloud.add_vector_quantity(
             "backward_grad_bc", bc_vals.grad, enabled=True, length=0.15

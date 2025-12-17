@@ -1,5 +1,7 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+from typing import Callable
+
 import torch
 
 
@@ -171,3 +173,177 @@ def signed_svd(
     # sign_v = torch.where(v_flipped, sign, torch.ones_like(s))
     # vh = torch.diag_embed(sign_v) @ vh
     return u, signed_s, vh
+
+
+def signed_svd(
+    mat: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    u, s, vh = torch.linalg.svd(mat)
+    repeated_count = (s[..., 1:] == s[..., :-1]).any(-1).count_nonzero()
+    if repeated_count > 0:
+        print(
+            f"Warning: detected {repeated_count} matrices with repeated singular values."
+        )
+    sign = torch.ones_like(s)
+    sign[..., -1] = torch.sign(torch.linalg.det(u @ vh))
+
+    signed_s = sign * s
+    # I think that flipping either u or vh to ensure both are rotations
+    # introduces additional discontinuities in derivatives.
+    # Therefore we always flip u.
+
+    # det_u = torch.linalg.det(u)
+    # det_v = torch.linalg.det(vh.mH)
+
+    # u_flipped = (det_u[..., None] < 0) & (det_v[..., None] > 0)
+    # sign_u = torch.where(u_flipped, sign, torch.ones_like(s))
+    u = u @ torch.diag_embed(sign)
+
+    # v_flipped = (det_u[..., None] > 0) & (det_v[..., None] < 0)
+    # sign_v = torch.where(v_flipped, sign, torch.ones_like(s))
+    # vh = torch.diag_embed(sign_v) @ vh
+    return u, signed_s, vh
+
+
+def sk(v):
+    x, y, z = v[..., 0], v[..., 1], v[..., 2]
+    O = torch.zeros_like(x)
+    return torch.stack(
+        [
+            torch.stack([O, -z, y], dim=-1),
+            torch.stack([z, O, -x], dim=-1),
+            torch.stack([-y, x, O], dim=-1),
+        ],
+        dim=-2,
+    )
+
+
+def sk_inv(B):
+    # half of the antisymmetric differences
+    return (
+        torch.stack(
+            [
+                B[..., 2, 1] - B[..., 1, 2],
+                B[..., 0, 2] - B[..., 2, 0],
+                B[..., 1, 0] - B[..., 0, 1],
+            ],
+            dim=-1,
+        )
+        * 0.5
+    )
+
+
+class Polar3x3(torch.autograd.Function):
+    generate_vmap_rule = True
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        (x,) = inputs
+        r, p = output
+
+        ctx.save_for_backward(x, r, p)
+        ctx.save_for_forward(x, r, p)
+
+    @staticmethod
+    def forward(x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        u, s, vh = signed_svd(x)
+        # TODO: use r.mT in ARAP
+        r = u @ vh
+        p = vh.mT @ torch.diag_embed(s) @ vh
+        torch.testing.assert_close(r @ p, x, rtol=1e-4, atol=1e-5)
+        return r, p
+
+    @staticmethod
+    def jvp(ctx, grad_x):
+        x, r, s = ctx.saved_tensors  # s = symmetric stretch tensor (your "p")
+
+        # --------- derivative steps ----------
+        # C = R^T Ȧ - Ȧ^T R
+        C = r.transpose(-1, -2) @ grad_x - grad_x.transpose(-1, -2) @ r
+
+        # vector form of skew(C)
+        c_vec = sk_inv(C)
+
+        # (tr(S) I - S) inverse
+        I = torch.eye(3, device=x.device, dtype=x.dtype)
+        tr_s = s.diagonal(dim1=-2, dim2=-1).sum(-1)
+        T = tr_s[:, None, None] * I - s
+        T_inv = torch.linalg.inv(T)
+
+        # m_vec = (tr(S)I - S)^(-1) * sk_inv(C)
+        m_vec = (T_inv @ c_vec.unsqueeze(-1)).squeeze(-1)
+
+        M = sk(m_vec)
+
+        # Ṙ = R M
+        r_dot = r @ M
+
+        # Ṡ = R^T (Ȧ - Ṙ S)
+        s_dot = r.transpose(-1, -2) @ (grad_x - r_dot @ s)
+
+        return r_dot, s_dot
+
+    @staticmethod
+    def backward(
+        ctx, grad_r: torch.Tensor | None, grad_p: torch.Tensor | None
+    ) -> torch.Tensor | None:
+        x, r, s = ctx.saved_tensors
+        device = x.device
+        dtype = x.dtype
+
+        if grad_r is None and grad_p is None:
+            return None
+
+        if grad_r is None:
+            grad_r = torch.zeros_like(s)
+        if grad_p is None:
+            grad_p = torch.zeros_like(r)
+
+        # ==== adjoint of ṗ = Rᵀ(Ȧ − Ṙ S) ====
+        # contributions:
+        #   grad_A += R grad_p
+        #   grad_(Ṙ) -= R grad_p Sᵀ  =  R grad_p S  (S is symmetric)
+
+        grad_A = r @ grad_p  # term hitting Ȧ
+        grad_Rdot_from_p = -(r @ grad_p @ s)  # term hitting Ṙ
+
+        # ==== adjoint of ṙ = R M ====
+        #   grad_M = Rᵀ grad_r
+        #   grad_R += grad_r Mᵀ (but grad_R isn't needed; R has no grad input)
+
+        # total grad_r includes contribution from ṗ through Ṙ
+        grad_r_total = grad_r + grad_Rdot_from_p
+
+        grad_M = r.transpose(-1, -2) @ grad_r_total
+
+        # M is skew: grad_M contributes only through its skew part
+        grad_M_vec = sk_inv(grad_M)
+
+        # ==== adjoint of M_vec = T_inv sk⁻¹(C), where C = Rᵀ Ȧ − Ȧᵀ R ====
+        # backprop through linear map M_vec = T_inv c_vec
+        I = torch.eye(3, device=device, dtype=dtype)
+        tr_s = s.diagonal(dim1=-2, dim2=-1).sum(-1)
+        T = tr_s[:, None, None] * I - s
+        T_inv = torch.linalg.inv(T)
+
+        grad_c_vec = (T_inv.transpose(-1, -2) @ grad_M_vec.unsqueeze(-1)).squeeze(-1)
+
+        # ==== adjoint of c_vec = sk⁻¹(C) ====
+        grad_C = sk(grad_c_vec)  # skew-symmetric contribution only
+
+        # ==== adjoint of C = Rᵀ Ȧ − Ȧᵀ R ====
+        # dC/dȦ applied to G gives:
+        #   grad_A += R G
+        #   grad_A += - (Gᵀ Rᵀ)ᵀ = - R Gᵀ
+
+        grad_A += r @ grad_C
+        grad_A += -(r @ grad_C.transpose(-1, -2))
+
+        return grad_A
+
+
+polar_3x3: Callable[[torch.Tensor], tuple[torch.Tensor, torch.Tensor]] = Polar3x3.apply
+
+
+def closest_rot_3x3(x: torch.Tensor) -> torch.Tensor:
+    return polar_3x3(x)[0]
