@@ -93,7 +93,7 @@ def grad_triangle_3d(
     grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
     grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
     grad_z = torch.sparse_coo_tensor(idx, values[:, 2], size=[n_faces, n_vertices])
-    return grad_x, grad_y, grad_z
+    return grad_x.coalesce(), grad_y.coalesce(), grad_z.coalesce()
 
 
 def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
@@ -149,7 +149,7 @@ def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tenso
     grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
     grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
 
-    return grad_x, grad_y
+    return grad_x.coalesce(), grad_y.coalesce()
 
 
 def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:

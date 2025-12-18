@@ -378,7 +378,9 @@ def reduce_on_subface(
     broadcast_faces = faces[(...,) + (None,) * len(values_shape)]
     broadcast_faces = broadcast_faces.expand(-1, -1, *values_shape)
     for i in range(faces.shape[-1]):
-        scattered.scatter_reduce_(0, broadcast_faces[:, i, ...], values, reduce=reduce)
+        scattered = scattered.scatter_reduce(
+            0, broadcast_faces[:, i, ...], values, reduce=reduce
+        )
     return scattered
 
 

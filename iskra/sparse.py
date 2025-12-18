@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
 from functools import reduce
-from typing import cast
+from typing import Sequence, cast
 
 import numpy as np
 import scipy.sparse
@@ -97,8 +97,8 @@ def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch
 def get_slice(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
     assert x.layout == torch.sparse_coo
     mask, new_shape = _build_index_selection_mask(x, *indices)
-    selected_idx = x._indices()[:, mask]
-    selected_val = x._values()[mask]
+    selected_idx = x.indices()[:, mask]
+    selected_val = x.values()[mask]
 
     for dim, idx in enumerate(indices):
         match idx:
@@ -125,8 +125,8 @@ def fill_slice(
 ) -> torch.Tensor:
     assert x.layout == torch.sparse_coo
     mask, _ = _build_index_selection_mask(x, *indices)
-    selected_idx = x._indices()
-    selected_val = x._values()
+    selected_idx = x.indices()
+    selected_val = x.values()
     selected_val[mask] = fill_value
     return torch.sparse_coo_tensor(
         selected_idx,
@@ -189,12 +189,113 @@ def repdiag(x: torch.Tensor, n_reps: int) -> torch.Tensor:
     ).coalesce()
 
 
+def cat(xs: Sequence[torch.Tensor], dim=0) -> torch.Tensor:
+    assert isinstance(xs, Sequence)
+    xs = [x.coalesce() for x in xs]
+    shapes = [x.shape for x in xs]
+    shape_0 = xs[0].shape
+    new_shape = [*shape_0]
+    for x in xs[1:]:
+        if not (
+            x.shape[:dim] == shape_0[:dim] and x.shape[dim + 1 :] == shape_0[dim + 1 :]
+        ):
+            raise ValueError(
+                f"Shapes must match except in dimension {dim}. Got shapes: {shapes}."
+            )
+        new_shape[dim] += x.shape[dim]
+
+    new_indices = torch.cat([x.indices() for x in xs], 1)
+    new_values = torch.cat([x.values() for x in xs], 0)
+
+    idcs_step = 0
+    shape_step = 0
+    for x in xs:
+        indices = x.indices()
+        new_indices[dim, idcs_step : idcs_step + indices.shape[1]] += shape_step
+        idcs_step += indices.shape[1]
+        shape_step += x.shape[dim]
+
+    return torch.sparse_coo_tensor(new_indices, new_values, size=new_shape).coalesce()
+
+
 def append(
     x: torch.Tensor, indices: torch.Tensor, values: torch.Tensor
 ) -> torch.Tensor:
     assert x.layout == torch.sparse_coo
     return torch.sparse_coo_tensor(
-        torch.cat([x._indices(), indices.to(x.device)], -1),
-        torch.cat([x._values(), values.to(x.device)], -1),
+        torch.cat([x.indices(), indices.to(x.device)], -1),
+        torch.cat([x.values(), values.to(x.device)], -1),
         size=x.shape,
     ).coalesce()
+
+
+def isect_indices(
+    a_idx: torch.Tensor, b_idx: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    combined = torch.cat([a_idx, b_idx], dim=1)
+    _, inverse, counts = torch.unique(
+        combined, dim=1, return_inverse=True, return_counts=True
+    )
+    dupl_mask = torch.gather(counts == 2, 0, inverse)
+    a_isect_mask = dupl_mask[: a_idx.shape[1]]
+    b_isect_mask = dupl_mask[a_idx.shape[1] :]
+    return a_isect_mask, b_isect_mask
+
+
+def mul_sparse_sparse(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    if a.shape != b.shape:
+        raise ValueError(
+            "Sparse-sparse multiplication currently only supports same-shaped tensors"
+        )
+    if not a.is_coalesced():
+        a = a.coalesce()
+    a_idx, a_val = a.indices(), a.values()
+
+    if not b.is_coalesced():
+        b = b.coalesce()
+    b_idx, b_val = b.indices(), b.values()
+
+    a_mask, b_mask = isect_indices(a_idx, b_idx)
+
+    return torch.sparse_coo_tensor(
+        a_idx[:, a_mask], a_val[a_mask] * b_val[b_mask], size=a.shape
+    ).coalesce()
+
+
+def mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    if not a.is_sparse and not b.is_sparse:
+        return a * b
+    elif a.is_sparse and b.is_sparse:
+        return mul_sparse_sparse(a, b)
+    elif b.is_sparse:
+        a, b = b, a
+
+    idx = a.indices()
+    val = a.values()
+    out_shape = torch.broadcast_shapes(a.shape, b.shape)
+
+    b_idx = []
+    for dim in range(a.dim()):
+        b_idx.append(0 if b.shape[dim] == 1 else idx[dim])
+
+    new_vals = val * b[tuple(b_idx)]
+    return torch.sparse_coo_tensor(idx, new_vals, size=out_shape).coalesce()
+
+
+def matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    swapped = False
+    if not a.is_sparse and not b.is_sparse:
+        return a @ b
+    elif a.is_sparse and b.is_sparse:
+        return torch.sparse.mm(a, b)
+    elif b.is_sparse:
+        swapped = True
+        a, b = b.mT, a.mT
+
+    if b.ndim == 1:
+        result = torch.sparse.mm(a, b[:, None])[:, 0]
+    elif a.ndim == 2 and b.ndim == 2:
+        result = torch.sparse.mm(a, b)
+    if swapped and result.ndim == 2:
+        result = result.mT
+    return result

@@ -1,55 +1,37 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
 from argparse import ArgumentParser
-from dataclasses import dataclass
 from functools import partial
-from typing import Callable, Literal
 
-import igl
-import numpy as np
-import scipy.sparse as sp
-import scipy.sparse.linalg as spla
 import torch
-from scipy.sparse.linalg import splu
 
 import iskra.sparse as sp
-from iskra.adjoint import (
-    compute_jacobians,
-    compute_numerical_jacobian,
-    make_solver_layer,
-    make_vjp,
-)
-from iskra.dec import d_01, d_10, laplacian
+from iskra.adjoint import compute_numerical_jacobian, make_solver_layer
+from iskra.dec import laplacian
 from iskra.fem import grad
-from iskra.geometry import cotan_weights, triangle_areas
+from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
-from iskra.signed_svd import signed_svd
-from iskra.sparse_linalg import (
-    cholespy_factor_and_solve,
-    gmres_solve,
-    min_quadratic_energy,
-)
-from iskra.topology import boundary, face_index, get_subfaces, reduce_on_subface
+from iskra.sparse_linalg import cholespy_factor_and_solve
+from iskra.topology import face_index, reduce_on_subface
 
 
 def rdg_step(
     y: torch.Tensor,
     z: torch.Tensor,
-    u: torch.Tensor,
     vert_areas: torch.Tensor,
     grad: torch.Tensor,
     div: torch.Tensor,
     lap: torch.Tensor,
-    rho: float,
-    alpha: float,
+    alpha: torch.Tensor,
+    rho: torch.Tensor,
     alphak: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # step 1: u-minimization
-    b = vert_areas - div @ y.flatten() + rho * div @ z.flatten()
-    u_new = cholespy_factor_and_solve(lap, b) / (alpha + rho)
+    b = vert_areas - sp.matmul(div, y.flatten()) + rho * sp.matmul(div, z.flatten())
+    u = cholespy_factor_and_solve(lap, b) / (alpha + rho)
 
     # step 2: z-minimization
-    grad_u = (grad @ u_new).reshape(*z.shape)
+    grad_u = sp.matmul(grad, u).reshape(*z.shape)
     z_new = (1 / rho) * y + grad_u
     norm_z = torch.linalg.vector_norm(z_new, axis=0)
     z_new = z_new / torch.where(norm_z >= 1, norm_z, 1)
@@ -57,18 +39,16 @@ def rdg_step(
     # step 3: dual update
     y_new = y + rho * (alphak * grad_u + (1 - alphak) * z - z_new)
 
-    return y_new, z_new, u_new
+    return y_new, z_new, u
 
 
-def rdg_admm(
+def rdg_solve(
     verts: torch.Tensor,
     faces: torch.Tensor,
     bc_idx: torch.Tensor,
     alpha_hat: float = 0.1,
     alphak: float = 1.7,
-    max_iter: int = 100,
-    abstol: float = 1e-5 / 2,
-    reltol: float = 1e-2,
+    max_iter: int = 200,
 ) -> torch.Tensor:
     n_vertices = verts.shape[0]
     n_faces = faces.shape[0]
@@ -78,22 +58,20 @@ def rdg_admm(
     tri_areas = triangle_areas(face_index(verts, faces))
     vert_areas = reduce_on_subface(tri_areas / 3, faces, n_vertices, "sum")
     g_x, g_y, g_z = grad(verts, faces)
-    g = torch.vstack([g_x, g_y, g_z]).coalesce()
+    g = sp.cat([g_x, g_y, g_z], 0)
     lap, _ = laplacian(verts, faces)
 
-    # ADMM parameters
-    rho: float = 2 * torch.sqrt(torch.sum(vert_areas)).item()
-    alpha: float = alpha_hat * torch.sqrt(torch.sum(vert_areas)).item()
-
+    alpha = alpha_hat * torch.sqrt(torch.sum(vert_areas))
+    rho = 2 * torch.sqrt(torch.sum(vert_areas))
     solver = make_solver_layer(
-        partial(rdg_step, rho=rho, alpha=alpha, alphak=alphak),
+        partial(rdg_step, alphak=alphak),
         [(0, 0), (1, 1)],
-        (3,),
+        (2, 3, 4, 5, 6, 7),
         fwd_method="fixed-point",
         fwd_max_iter=max_iter,
         fwd_eps=1e-12,
         bwd_method="gmres",
-        bwd_max_iter=200,
+        bwd_max_iter=max_iter,
         bwd_eps=1e-12,
     )
 
@@ -101,17 +79,32 @@ def rdg_admm(
     unknown_mask[bc_idx] = False
     unknown_idx = torch.nonzero(unknown_mask).flatten()
     vert_areas_unknown = vert_areas[unknown_idx]
-    lap_unknown = sp.get_slice(lap, unknown_idx, unknown_idx)
+
     g_unknown = sp.get_slice(g, slice(0, 3 * n_faces), unknown_idx)
-    div_unknown = (torch.cat(3 * [tri_areas])[:, None] * g_unknown).mT
+    lap_unknown = sp.get_slice(lap, unknown_idx, unknown_idx)
+    div_unknown = sp.mul(torch.cat(3 * [tri_areas])[None, :], g_unknown.mT.coalesce())
 
     u_unknown = torch.zeros([unknown_idx.shape[0]], device=device, dtype=dtype)
     y = torch.zeros([3, n_faces], device=device, dtype=dtype)
     z = torch.zeros([3, n_faces], device=device, dtype=dtype)
 
     y, z, u_unknown = solver(
-        y, z, u_unknown, vert_areas_unknown, g_unknown, div_unknown, lap_unknown
+        y,
+        z,
+        vert_areas_unknown,
+        g_unknown,
+        div_unknown,
+        lap_unknown,
+        alpha,
+        rho,
     )
+
+    b = (
+        vert_areas_unknown
+        - sp.matmul(div_unknown, y.flatten())
+        + rho * sp.matmul(div_unknown, z.flatten())
+    )
+    u_unknown = cholespy_factor_and_solve(lap_unknown, b) / (alpha + rho)
 
     u = torch.zeros([n_vertices], device=device, dtype=dtype)
     u[unknown_idx] = u_unknown
@@ -126,7 +119,23 @@ def main(mesh_path):
     faces, verts = mesh.topo.faces, mesh.geom.vertices.to(torch.float64)
     bc_idx = torch.tensor([0], device=device, dtype=torch.int64)
 
-    dist = rdg_admm(verts, faces, bc_idx)
+    verts = verts.requires_grad_(True)
+    dist = rdg_solve(verts, faces, bc_idx)
+    grad_dist = torch.full_like(dist, 2)
+    dist.backward(grad_dist)
+
+    with torch.no_grad():
+        num_jac = compute_numerical_jacobian(
+            rdg_solve, 0, 0, 1e-8, verts, faces, bc_idx
+        )
+        num_grad = (grad_dist.flatten() @ num_jac).reshape(*verts.shape)
+
+    # for i in range(1):
+    #     if verts.grad is not None:
+    #         verts.grad.zero_()
+    #     dist = rdg_admm(verts, faces, bc_idx)
+    #     dist.backward(torch.full_like(dist, -2))
+    #     verts.data -= 1e-4 * verts.grad
 
     try:
         import polyscope as ps
@@ -134,16 +143,29 @@ def main(mesh_path):
         ps.init()
         ps.set_ground_plane_mode("shadow_only")
         ps_mesh = ps.register_surface_mesh(
-            "mesh", verts.numpy(), faces.numpy(), enabled=True
+            "mesh",
+            verts.detach().numpy(),
+            faces.numpy(),
+            transparency=0.4,
+            enabled=True,
         )
         ps_mesh.add_scalar_quantity(
-            "dist", dist, defined_on="vertices", enabled=True, isolines_enabled=True
+            "dist",
+            dist.detach().numpy(),
+            isolines_enabled=True,
+            defined_on="vertices",
+            enabled=True,
         )
-
-        ps_mesh.add_scalar_quantity(
-            "dist", dist, defined_on="vertices", enabled=True, isolines_enabled=True
+        ps_verts = ps.register_point_cloud(
+            "verts", verts.detach().numpy(), enabled=True, radius=0.001
         )
-        ps.register_point_cloud("bc", verts[bc_idx].numpy(), enabled=True)
+        ps_verts.add_vector_quantity(
+            "grad", verts.grad.numpy(), enabled=True, length=0.15
+        )
+        ps_verts.add_vector_quantity(
+            "num_grad", num_grad.numpy(), length=0.15, enabled=True
+        )
+        ps.register_point_cloud("bc", verts[bc_idx].detach().numpy(), enabled=True)
 
         def callback():
             if ps.imgui.Button("Compute"):
@@ -160,7 +182,7 @@ def main(mesh_path):
 
 if __name__ == "__main__":
     print(f"Default num_threads: {torch.get_num_threads()}")
-    torch.set_num_threads(8)
+    torch.set_num_threads(16)
     torch.set_printoptions(linewidth=200, sci_mode=False)
 
     parser = ArgumentParser(description="Demonstrates ARAP.")

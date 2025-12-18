@@ -40,7 +40,9 @@ def make_vjp[T, **P](
             args_list[arg_i] = arg
             params.append(arg)
 
-        outputs = cast(tuple[Any, ...], fn(*args_list, **kwargs))
+        outputs = fn(*args_list, **kwargs)
+        if not isinstance(outputs, tuple):
+            outputs = (outputs,)
 
         befores = tuple(args_list[iterate[0]] for iterate in iterates)
         afters = tuple(outputs[iterate[1]] for iterate in iterates)
@@ -98,6 +100,8 @@ def make_solver_layer[T, **P](
                         f"Iterate fn parameter at position {arg_i} is not a Tensor. "
                         f"Got {type(arg)} instead."
                     )
+            if not isinstance(outputs, tuple):
+                outputs = (outputs,)
             for out_i, out in enumerate(outputs):
                 if not isinstance(out, torch.Tensor):
                     raise ValueError(
@@ -126,7 +130,7 @@ def make_solver_layer[T, **P](
                         args_list[iterate[0]] = outputs[iterate[1]]
                     if difference < fwd_eps:
                         break
-            print("Final error: ", difference.cpu().detach().item())
+            print("Final error (forward): ", difference.cpu().detach().item())
             return outputs
 
         @staticmethod
@@ -158,9 +162,12 @@ def make_solver_layer[T, **P](
             else:
                 raise ValueError(f"Unrecognized backwards solver {bwd_method}")
             gmres_error = torch.norm(
-                (grad_iterate - vjp_iterate(-dl_df)[0].flatten()).flatten()
+                (
+                    grad_iterate.flatten()
+                    - torch.cat([grad.flatten() for grad in vjp_iterate(-dl_df)])
+                ).flatten()
             )
-            print(f"GMRES Error: {gmres_error.item()}")
+            print(f"Final error (backward): {gmres_error.item()}")
             grad_param = vjp_params(dl_df)
             for i, argnum in enumerate(argnums):
                 result[argnum] = grad_param[i]
@@ -194,9 +201,13 @@ def compute_numerical_jacobian[T, **P](
     for i in range(offset.shape[0]):
         offset[i] = eps
         args_list[argnum] = arg + offset.reshape(*arg.shape)
-        plus = solver_fn(*args_list, **kwargs)[out_idx]
+        plus = solver_fn(*args_list, **kwargs)
+        if isinstance(plus, tuple):
+            plus = plus[out_idx]
         args_list[argnum] = arg - offset.reshape(*arg.shape)
-        minus = solver_fn(*args_list, **kwargs)[out_idx]
+        minus = solver_fn(*args_list, **kwargs)
+        if isinstance(minus, tuple):
+            minus = minus[out_idx]
         offset[i] = 0
         if num_jac is None:
             num_jac = torch.zeros(
