@@ -8,6 +8,13 @@ import scipy.sparse
 import torch
 
 
+def index_complement(n: int, idx: torch.Tensor) -> torch.Tensor:
+    unknown_mask = torch.ones([n], dtype=torch.bool, device=idx.device)
+    unknown_mask[idx] = False
+    unknown_idx = torch.nonzero(unknown_mask).flatten()
+    return unknown_idx
+
+
 def eye(n: int, dtype: torch.dtype = torch.float32, device: str | torch.device = "cpu"):
     idx = torch.arange(n, device=device)
     ij = torch.stack(2 * [idx])
@@ -37,6 +44,10 @@ def get_diag(mat: torch.Tensor) -> torch.Tensor:
     ).coalesce()
 
 
+def inv_diag(mat: torch.Tensor) -> torch.Tensor:
+    return diag(1.0 / get_diag(mat))
+
+
 def scipy_to_torch(
     x: scipy.sparse.sparray, device: torch.device | str = "cpu"
 ) -> torch.Tensor:
@@ -57,7 +68,7 @@ def torch_to_scipy(x: torch.Tensor) -> scipy.sparse.coo_array:
     return x_scipy
 
 
-_INDEX_TYPE = slice | int | torch.Tensor | tuple[int, ...]
+_INDEX_TYPE = None | slice | int | torch.Tensor | tuple[int, ...]
 
 
 def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:

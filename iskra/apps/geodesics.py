@@ -115,7 +115,7 @@ def main(mesh_path):
     dtype = torch.double
     device = "cpu"
     mesh, _ = Mesh.from_path(mesh_path, fdtype=dtype, device=device)
-    mesh.geom.normalize()
+    # mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices.to(torch.float64)
     bc_idx = torch.tensor([0], device=device, dtype=torch.int64)
 
@@ -124,11 +124,13 @@ def main(mesh_path):
     grad_dist = torch.full_like(dist, 2)
     dist.backward(grad_dist)
 
-    with torch.no_grad():
-        num_jac = compute_numerical_jacobian(
-            rdg_solve, 0, 0, 1e-8, verts, faces, bc_idx
-        )
-        num_grad = (grad_dist.flatten() @ num_jac).reshape(*verts.shape)
+    num_grad = None
+    if verts.shape[0] < 100:
+        with torch.no_grad():
+            num_jac = compute_numerical_jacobian(
+                rdg_solve, 0, 0, 1e-8, verts, faces, bc_idx
+            )
+            num_grad = (grad_dist.flatten() @ num_jac).reshape(*verts.shape)
 
     # for i in range(1):
     #     if verts.grad is not None:
@@ -162,9 +164,10 @@ def main(mesh_path):
         ps_verts.add_vector_quantity(
             "grad", verts.grad.numpy(), enabled=True, length=0.15
         )
-        ps_verts.add_vector_quantity(
-            "num_grad", num_grad.numpy(), length=0.15, enabled=True
-        )
+        if num_grad is not None:
+            ps_verts.add_vector_quantity(
+                "num_grad", num_grad.numpy(), length=0.15, enabled=True
+            )
         ps.register_point_cloud("bc", verts[bc_idx].detach().numpy(), enabled=True)
 
         def callback():

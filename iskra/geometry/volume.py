@@ -30,8 +30,8 @@ def triangle_areas(triangles: torch.Tensor) -> torch.Tensor:
     Returns:
         Tensor[Float, [Bs]]: Triangle areas.
     """
-    double_area_normals = triangle_area_normals(triangles)
-    areas: torch.Tensor = torch.linalg.vector_norm(double_area_normals, dim=-1)
+    area_normals = triangle_area_normals(triangles)
+    areas: torch.Tensor = torch.linalg.vector_norm(area_normals, dim=-1)
     return areas
 
 
