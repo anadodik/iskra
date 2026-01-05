@@ -49,7 +49,7 @@ if __name__ == "__main__":
         bdr = torch.tensor([], dtype=torch.long, device=faces.device)
         verts_smooth = min_quadratic_energy(
             mass + 0.001 * lap, mass @ verts, bdr, verts[bdr]
-        )
+        )[1]
 
         from pathlib import Path
 

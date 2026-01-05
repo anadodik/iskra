@@ -1,5 +1,6 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+import time
 from functools import reduce
 from typing import Sequence, cast
 
@@ -68,6 +69,31 @@ def torch_to_scipy(x: torch.Tensor) -> scipy.sparse.coo_array:
     return x_scipy
 
 
+def isect_indices(
+    a_idx: torch.Tensor, b_idx: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Checks which indices in two tensors apepar in both.
+
+    Assumes unique sets of indices in both function inputs.
+
+    Args:
+        a_idx (torch.Tensor): First set of indices to compare.
+        b_idx (torch.Tensor): Second set of indices to compare.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: Masks (one per input),
+            that are True if the index is repeated in the other tensor.
+    """
+    combined = torch.cat([a_idx, b_idx], dim=-1)
+    _, inverse, counts = torch.unique(
+        combined, dim=-1, return_inverse=True, return_counts=True
+    )
+    dupl_mask = torch.gather(counts == 2, 0, inverse)
+    a_isect_mask = dupl_mask[: a_idx.shape[-1]]
+    b_isect_mask = dupl_mask[a_idx.shape[-1] :]
+    return a_isect_mask, b_isect_mask
+
+
 _INDEX_TYPE = None | slice | int | torch.Tensor | tuple[int, ...]
 
 
@@ -76,6 +102,8 @@ def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch
     new_shape = list(x.shape)
     mask = torch.ones(x.indices().shape[-1], device=x.device, dtype=torch.bool)
     for dim, idx in enumerate(indices):
+        if isinstance(idx, tuple):
+            idx = torch.tensor(idx, device=x.device, dtype=torch.int64)
         match idx:
             case None:
                 continue
@@ -84,11 +112,17 @@ def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch
                     idx = x.shape[dim] + idx
                 mask &= x.indices()[dim] == idx
                 new_shape[dim] = 1
-            case tuple() | torch.Tensor(dtype=torch.long):
+            case torch.Tensor(dtype=torch.int64):
                 # TODO(anadodik): check tensor dimensions
-                idx = tuple(i if i >= 0 else x.shape[dim] + i for i in idx)
-                mask &= reduce(torch.logical_or, (x.indices()[dim] == i for i in idx))
+                start_t = time.perf_counter()
+                idx = torch.where(idx >= 0, idx, x.shape[dim] + idx)
+                x_idx_unq, inverse = torch.unique(x.indices()[dim], return_inverse=True)
+                isect_unq, _ = isect_indices(x_idx_unq, idx)
+                isect_mask = torch.gather(isect_unq, 0, inverse)
+                mask &= isect_mask
                 new_shape[dim] = len(idx)
+                end_t = time.perf_counter()
+                # print(f"torch.int64 mask took: {end_t - start_t}s.")
             case torch.Tensor(dtype=torch.bool):
                 idx = torch.nonzero(idx)
                 mask &= reduce(torch.logical_or, (x.indices()[dim] == i for i in idx))
@@ -106,8 +140,27 @@ def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch
 
 
 def get_slice(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
+    """Slices a sparse tensor.
+
+    !!! warning
+        The behavior of this function is *not* the same PyTorch's [] operator.
+        This function only slices (and masks) a sparse Tensor.
+        It cannot be used with arbitrary integer indices to reorder and repeat
+        certain elements.
+
+    Args:
+        x (torch.Tensor): Sparse tensor to be sliced.
+        *indices (None | slice | int | torch.Tensor | tuple[int, ...]): Slicing masks
+            per dimension of Tensor.
+
+    Returns:
+        torch.Tensor: Sliced sparse tensor.
+    """
     assert x.layout == torch.sparse_coo
+    start_t = time.perf_counter()
     mask, new_shape = _build_index_selection_mask(x, *indices)
+    end_t = time.perf_counter()
+    # print(f"_build_index_selection_mask took: {end_t - start_t}s.")
     selected_idx = x.indices()[:, mask]
     selected_val = x.values()[mask]
 
@@ -238,19 +291,6 @@ def append(
         torch.cat([x.values(), values.to(x.device)], -1),
         size=x.shape,
     ).coalesce()
-
-
-def isect_indices(
-    a_idx: torch.Tensor, b_idx: torch.Tensor
-) -> tuple[torch.Tensor, torch.Tensor]:
-    combined = torch.cat([a_idx, b_idx], dim=1)
-    _, inverse, counts = torch.unique(
-        combined, dim=1, return_inverse=True, return_counts=True
-    )
-    dupl_mask = torch.gather(counts == 2, 0, inverse)
-    a_isect_mask = dupl_mask[: a_idx.shape[1]]
-    b_isect_mask = dupl_mask[a_idx.shape[1] :]
-    return a_isect_mask, b_isect_mask
 
 
 def mul_sparse_sparse(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

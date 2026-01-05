@@ -67,7 +67,7 @@ if __name__ == "__main__":
 
     dtype = torch.double
     device = "cpu"
-    mesh, _ = Mesh.from_path(args.mesh_path, fdtype=dtype, device=device)
+    mesh, _ = Mesh.from_path(args.mesh_path, dtype=dtype, device=device)
     mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices
 

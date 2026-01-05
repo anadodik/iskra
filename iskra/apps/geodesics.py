@@ -28,7 +28,7 @@ def rdg_step(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # step 1: u-minimization
     b = vert_areas - sp.matmul(div, y.flatten()) + rho * sp.matmul(div, z.flatten())
-    u = cholespy_factor_and_solve(lap, b) / (alpha + rho)
+    u = cholespy_factor_and_solve(lap, b)[1] / (alpha + rho)
 
     # step 2: z-minimization
     grad_u = sp.matmul(grad, u).reshape(*z.shape)
@@ -104,7 +104,7 @@ def rdg_solve(
         - sp.matmul(div_unknown, y.flatten())
         + rho * sp.matmul(div_unknown, z.flatten())
     )
-    u_unknown = cholespy_factor_and_solve(lap_unknown, b) / (alpha + rho)
+    u_unknown = cholespy_factor_and_solve(lap_unknown, b)[1] / (alpha + rho)
 
     u = torch.zeros([n_vertices], device=device, dtype=dtype)
     u[unknown_idx] = u_unknown
@@ -114,7 +114,7 @@ def rdg_solve(
 def main(mesh_path):
     dtype = torch.double
     device = "cpu"
-    mesh, _ = Mesh.from_path(mesh_path, fdtype=dtype, device=device)
+    mesh, _ = Mesh.from_path(mesh_path, dtype=dtype, device=device)
     # mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices.to(torch.float64)
     bc_idx = torch.tensor([0], device=device, dtype=torch.int64)

@@ -20,7 +20,7 @@ from iskra.dec import d_01, d_10, laplacian
 from iskra.geometry import cotan_weights
 from iskra.mesh import Mesh
 from iskra.signed_svd import signed_svd
-from iskra.sparse_linalg import gmres_solve, min_quadratic_energy
+from iskra.sparse_linalg import gmres_solve
 from iskra.topology import boundary, face_index, get_subfaces, reduce_on_subface
 
 

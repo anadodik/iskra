@@ -1,5 +1,6 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+import time
 from argparse import ArgumentParser
 from functools import partial
 from math import sqrt
@@ -14,8 +15,9 @@ from iskra.fem import grad
 from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
 from iskra.sparse_linalg import (
-    CholeskySolver,
+    CholespySolver,
     cholespy_factor_and_solve,
+    make_cholespy_solver,
     min_quadratic_energy,
 )
 from iskra.topology import face_index, reduce_on_subface
@@ -32,12 +34,13 @@ def rdg_step(
     alpha: torch.Tensor,
     rho: torch.Tensor,
     alphak: float,
+    lap_solver: CholespySolver | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     # step 1: u-minimization
     div_y = sp.matmul(div, y.flatten())
     div_z = sp.matmul(div, z.flatten())
     b = vert_areas - div_y + rho * div_z
-    u = cholespy_factor_and_solve(lap, b) / (alpha + rho)
+    u = cholespy_factor_and_solve(lap, b, solver=lap_solver)[1] / (alpha + rho)
 
     # step 2: z-minimization
     grad_u = sp.matmul(grad, u).reshape(*z.shape)
@@ -84,7 +87,8 @@ def rdg_solve(
     bc_idx: torch.Tensor,
     alpha_hat: float = 0.05,
     alphak: float = 1.7,
-    max_iter: int = 1000,
+    fwd_max_iter: int = 2_000,
+    bwd_max_iter: int = 600,
 ) -> torch.Tensor:
     n_vertices = verts.shape[0]
     n_faces = faces.shape[0]
@@ -99,23 +103,25 @@ def rdg_solve(
 
     alpha = alpha_hat * torch.sqrt(torch.sum(vert_areas))
     rho = 2 * torch.sqrt(torch.sum(vert_areas))
-    solver = make_solver_layer(
-        partial(rdg_step, alphak=alphak),
-        [(0, 0), (1, 1), (8, 3)],
-        (2, 3, 4, 5, 6, 7),
-        fwd_method="fixed-point",
-        fwd_max_iter=max_iter,
-        fwd_eps=1e-12,
-        bwd_method="gmres",
-        bwd_max_iter=max_iter,
-        bwd_eps=1e-12,
-    )
 
     unknown_idx = sp.index_complement(n_vertices, bc_idx)
     vert_areas_unknown = vert_areas[unknown_idx]
     g_unknown = sp.get_slice(g, None, unknown_idx)
     lap_unknown = sp.get_slice(sp.get_slice(lap, unknown_idx, None), None, unknown_idx)
     div_unknown = sp.mul(torch.cat(3 * [tri_areas])[None, :], g_unknown.mT.coalesce())
+    chol = make_cholespy_solver(lap_unknown)
+
+    solver = make_solver_layer(
+        partial(rdg_step, alphak=alphak, lap_solver=chol),
+        [(0, 0), (1, 1), (8, 3)],
+        (2, 3, 4, 5, 6, 7),
+        fwd_method="fixed-point",
+        fwd_max_iter=fwd_max_iter,
+        fwd_eps=1e-12,
+        bwd_method="gmres",
+        bwd_max_iter=bwd_max_iter,
+        bwd_eps=1e-12,
+    )
 
     u_unknown = torch.zeros([unknown_idx.shape[0]], device=device, dtype=dtype)
     y = torch.zeros([3, n_faces], device=device, dtype=dtype)
@@ -138,7 +144,9 @@ def rdg_solve(
         - sp.matmul(div_unknown, y.flatten())
         + rho * sp.matmul(div_unknown, z.flatten())
     )
-    u_unknown = cholespy_factor_and_solve(lap_unknown, b) / (alpha + rho)
+    u_unknown = cholespy_factor_and_solve(lap_unknown, b, solver=chol)[1] / (
+        alpha + rho
+    )
 
     u = torch.zeros([n_vertices], device=device, dtype=dtype)
     u[unknown_idx] = u_unknown
@@ -172,7 +180,7 @@ class Verts(torch.nn.Module):
 def main(mesh_path):
     dtype = torch.double
     device = "cpu"
-    mesh, _ = Mesh.from_path(mesh_path, fdtype=dtype, device=device)
+    mesh, _ = Mesh.from_path(mesh_path, dtype=dtype, device=device)
     # mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices.to(torch.float64)
     terrain = Heightfield(verts[:, (0, 2)])
@@ -269,7 +277,7 @@ def main(mesh_path):
         is_optimizing = False
         iteration = 0
         sobolev_factor = 20.0
-        smoothing = 0.5
+        smoothing = 0.25
         max_iter = 250
 
         def callback():
@@ -288,12 +296,13 @@ def main(mesh_path):
             if is_optimizing:
                 print(f"Optimizing, iteration {iteration}.")
                 iteration += 1
-                if iteration >= max_iter:
-                    ps.shutdown(True)
+                if iteration > max_iter:
+                    ps.unshow()
                     return
                 if iteration % 250 == 0:
                     is_optimizing = False
                 for _ in range(1):
+                    time_start = time.perf_counter()
                     optimizer.zero_grad()
                     bc_idx = torch.tensor([start], device=device, dtype=torch.int64)
                     dist = rdg_solve(terrain(), faces, bc_idx)
@@ -308,7 +317,13 @@ def main(mesh_path):
                         f"smooth_loss={smooth_loss.item():.6f}, "
                         f"nonneg_loss={nonneg_loss.item():.6f})."
                     )
+                    time_end = time.perf_counter()
+                    print(f"Forward took: {time_end - time_start}s.")
+                    time_start = time.perf_counter()
                     loss.backward()
+                    time_end = time.perf_counter()
+                    print(f"Backward took: {time_end - time_start}s.")
+
                     with torch.no_grad():
                         assert terrain.z.grad is not None
                         z_grad = min_quadratic_energy(
@@ -316,7 +331,7 @@ def main(mesh_path):
                             mass @ terrain.z.grad,
                             torch.tensor([[start]], device=device),
                             torch.tensor([[0.0]], dtype=dtype, device=device),
-                        )
+                        )[1]
 
                         new_lr = lr
                         max_z_grad = z_grad.abs().max()

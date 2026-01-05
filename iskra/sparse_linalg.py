@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
 import time
-from typing import Callable, Literal
+from typing import Callable, Literal, TypeAlias
 
 import numpy as np
 import scipy.sparse
@@ -9,32 +9,63 @@ import torch
 from cholespy import CholeskySolverD, CholeskySolverF, MatrixType
 from numpy import indices
 
+try:
+    from sksparse import cholmod
+
+    _cholmod_available = True
+except ImportError:
+    _cholmod_available = False
+
 import iskra.sparse as sp
 
+CholespySolver: TypeAlias = (
+    CholeskySolverD | CholeskySolverF | scipy.sparse.linalg.SuperLU
+)
 
-def make_solver(mat: torch.Tensor) -> CholeskySolverF | CholeskySolverD:
+
+def make_cholespy_solver(mat: torch.Tensor) -> CholespySolver:
+    # print("Making new solver.")
     mat = mat.coalesce()
-    if mat.dtype == torch.float32:
-        solver = CholeskySolverF(
+    if mat.device != torch.device("cpu") or not _cholmod_available:
+        if mat.dtype == torch.float32:
+            solver_t = CholeskySolverF
+        elif mat.dtype == torch.float64:
+            solver_t = CholeskySolverD
+        else:
+            raise TypeError(
+                f"CholeskySolver only supports f32 and f64 matrices, found {mat.dtype}."
+            )
+        solver = solver_t(
             mat.shape[0],
             mat.indices()[0],
             mat.indices()[1],
             mat.values(),
             MatrixType.COO,
         )
-    elif mat.dtype == torch.float64:
-        solver = CholeskySolverD(
-            mat.shape[0],
-            mat.indices()[0],
-            mat.indices()[1],
-            mat.values(),
-            MatrixType.COO,
-        )
+    elif _cholmod_available:
+        solver = cholmod.cholesky(sp.torch_to_scipy(mat.detach().cpu()))
     else:
-        raise TypeError(
-            f"CholeskySolver only supports f32 and f64 matrices, found {mat.dtype}."
-        )
+        # if mat.dtype == torch.cfloat:
+        solver = scipy.sparse.linalg.splu(sp.torch_to_scipy(mat.detach().cpu()))
     return solver
+
+
+def _call_solver(solver: CholespySolver, b: torch.Tensor) -> torch.Tensor:
+    start_t = time.perf_counter()
+    b = b.contiguous()
+    if isinstance(solver, CholeskySolverF) or isinstance(solver, CholeskySolverD):
+        x = torch.zeros_like(b)
+        solver.solve(b, x)
+    elif isinstance(solver, scipy.sparse.linalg.SuperLU):
+        x = torch.tensor(solver.solve(b.detach().cpu().numpy()), device=b.device)
+    elif _cholmod_available and isinstance(solver, cholmod.Factor):
+        x = torch.tensor(solver.solve_A(b.detach().cpu().numpy()), device=b.device)
+    else:
+        raise ValueError(f"Unrecognized solver type: {type(solver)}.")
+    end_t = time.perf_counter()
+    # print(f"_call_solver took: {end_t - start_t}s.")
+
+    return x
 
 
 class CholespySolve(torch.autograd.Function):
@@ -49,7 +80,7 @@ class CholespySolve(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        solver: CholeskySolverF | CholeskySolverD,
+        solver: CholespySolver,
         b: torch.Tensor,
         x: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -73,7 +104,7 @@ class CholespySolve(torch.autograd.Function):
 
 
 def cholespy_solve(
-    solver: CholeskySolverF | CholeskySolverD,
+    solver: CholespySolver,
     b: torch.Tensor,
     x: torch.Tensor | None = None,
 ) -> torch.Tensor:
@@ -85,7 +116,7 @@ class CholespyFactorAndSolve(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (mat, b, _) = inputs
+        (mat, b, _, _) = inputs
         (solver, x) = output
         ctx.save_for_backward(mat, b, x)
         ctx.solver = solver
@@ -94,29 +125,28 @@ class CholespyFactorAndSolve(torch.autograd.Function):
     def forward(
         mat: torch.Tensor,
         b: torch.Tensor,
+        solver: CholespySolver | None = None,
         x: torch.Tensor | None = None,
-    ) -> tuple[CholeskySolverF | CholeskySolverD, torch.Tensor]:
+    ) -> tuple[CholespySolver, torch.Tensor]:
         if not mat.is_coalesced():
             raise ValueError("Matrix not coalesced, please call .coalesce() first.")
-        solver: CholeskySolverF | CholeskySolverD = make_solver(mat)
-        b = b.contiguous()
-        if x is None:
-            x = torch.zeros_like(b)
-        solver.solve(b, x)
+        if solver is None:
+            solver = make_cholespy_solver(mat)
+            assert solver is not None
+        x = _call_solver(solver, b)
         return solver, x
 
     @staticmethod
     def backward(
         ctx, solver_grad: None, forward_grad: torch.Tensor
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None, None]:
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None, None, None]:
         forward_grad = forward_grad.contiguous()
         n = forward_grad.shape[0]
         mat, _, x = ctx.saved_tensors
         b_grad: torch.Tensor | None = None
         mat_grad: torch.Tensor | None = None
 
-        dg_dx = torch.zeros_like(forward_grad)
-        ctx.solver.solve(forward_grad, dg_dx)
+        dg_dx = _call_solver(ctx.solver, forward_grad)
         # print("forward_grad", forward_grad)
         # print("dg_dx", dg_dx)
         if ctx.needs_input_grad[0]:
@@ -130,13 +160,20 @@ class CholespyFactorAndSolve(torch.autograd.Function):
 
         if ctx.needs_input_grad[1]:
             b_grad = dg_dx.clone()
-        return mat_grad, b_grad, None
+        return mat_grad, b_grad, None, None
 
 
 def cholespy_factor_and_solve(
-    mat: torch.Tensor, b: torch.Tensor, x: torch.Tensor | None = None
-) -> torch.Tensor:
-    return CholespyFactorAndSolve.apply(mat, b, x)[1]  # pyright: ignore[reportAssignmentType, reportOptionalSubscript]
+    mat: torch.Tensor,
+    b: torch.Tensor,
+    solver: CholespySolver | None = None,
+    x: torch.Tensor | None = None,
+) -> tuple[CholespySolver, torch.Tensor]:
+    start_t = time.perf_counter()
+    result = CholespyFactorAndSolve.apply(mat, b, solver, x)  # pyright: ignore[reportAssignmentType, reportReturnType]
+    end_t = time.perf_counter()
+    # print(f"cholespy_factor_and_solve took: {end_t - start_t}s.")
+    return result
 
 
 class CholeskySolver(torch.nn.Module):
@@ -148,18 +185,40 @@ class CholeskySolver(torch.nn.Module):
 
     def __init__(self, mat: torch.Tensor):
         super().__init__()
-        self.solver = make_solver(mat)
+        raise DeprecationWarning("DEPRECATED")
+        self.solver = make_cholespy_solver(mat)
 
     def forward(self, b: torch.Tensor, x: torch.Tensor | None = None) -> torch.Tensor:
         return cholespy_solve(self.solver, b, x)
 
 
-def min_quadratic_energy(
-    system: torch.Tensor,
+def quad_energy_mat(mat: torch.Tensor, unknown_idx: torch.Tensor) -> torch.Tensor:
+    return sp.get_slice(mat, unknown_idx, unknown_idx)
+
+
+def quad_energy_rhs(
+    mat: torch.Tensor,
     rhs: torch.Tensor,
     known_idx: torch.Tensor,
     known_values: torch.Tensor,
+    unknown_idx: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    if unknown_idx is None:
+        unknown_idx = sp.index_complement(rhs.shape[0], known_idx)
+    if known_idx.nelement() > 0:
+        mat_uk = sp.get_slice(mat, unknown_idx, known_idx)
+        return rhs[unknown_idx, ...] - mat_uk @ known_values
+    else:
+        return rhs
+
+
+def min_quadratic_energy(
+    mat: torch.Tensor,
+    rhs: torch.Tensor,
+    known_idx: torch.Tensor,
+    known_values: torch.Tensor,
+    solver: CholespySolver | None = None,
+) -> tuple[CholespySolver, torch.Tensor]:
     if rhs.ndim != known_values.ndim or (
         rhs.ndim > 1 and rhs.shape[-1] != known_values.shape[-1]
     ):
@@ -167,44 +226,31 @@ def min_quadratic_energy(
             "rhs must have the same number of dim and same last dim as known_values. "
             f"rhs.shape = {rhs.shape}, known_values.shape = {known_values.shape}."
         )
-    if not system.is_coalesced():
-        system = system.coalesce()
-    n_rows = system.shape[0]
-    unknown_mask = torch.ones([n_rows], dtype=torch.bool, device=known_idx.device)
-    unknown_mask[known_idx] = False
-    unknown_idx = torch.nonzero(unknown_mask).flatten()
-    system_uu = sp.get_slice(system, unknown_idx, unknown_idx)
-    if known_idx.nelement() > 0:
-        system_uk = sp.get_slice(system, unknown_idx, known_idx)
-        known_part = system_uk @ known_values
-    else:
-        known_part = 0
-    rhs_u = rhs[unknown_idx, ...]
-    new_rhs = rhs_u - known_part
+    if not mat.is_coalesced():
+        mat = mat.coalesce()
+    unknown_idx = sp.index_complement(rhs.shape[0], known_idx)
+    start_t = time.perf_counter()
+    new_rhs = quad_energy_rhs(mat, rhs, known_idx, known_values, unknown_idx)
+    end_t = time.perf_counter()
+    # print(f"quad_energy_rhs took: {end_t - start_t}s.")
 
-    if system_uu.dtype == torch.cfloat:
-        # TODO: make complex numbers work on the GPU and with gradients
-        system_uu_sp = sp.torch_to_scipy(system_uu.detach().cpu())
-        solver = scipy.sparse.linalg.splu(system_uu_sp)
-        unknown = torch.tensor(
-            solver.solve(new_rhs.detach().cpu().numpy()), device=rhs.device
-        )
-    else:
-        unknown = cholespy_factor_and_solve(system_uu, new_rhs)
-        # solver = CholeskySolver(system_uu)
-        # unknown = solver(new_rhs)
+    start_t = time.perf_counter()
+    mat_uu = sp.get_slice(mat, unknown_idx, unknown_idx)
+    end_t = time.perf_counter()
+    # print(f"sp.get_slice took: {end_t - start_t}s.")
+    solver, unknown = cholespy_factor_and_solve(mat_uu, new_rhs, solver=solver)
 
     result = torch.zeros_like(rhs)
     result[unknown_idx] = unknown
     result[known_idx] = known_values
-    return result
+    return solver, result
 
 
 def power_iteration(
     a: torch.Tensor, x: torch.Tensor, m: torch.Tensor, sigma: float | None
 ) -> torch.Tensor:
     if sigma is not None:
-        evecs = cholespy_factor_and_solve(a - sigma * m, torch.sparse.mm(m, x))
+        evecs = cholespy_factor_and_solve(a - sigma * m, torch.sparse.mm(m, x))[1]
     else:
         evecs = torch.sparse.mm(a, x)
     evecs = torch.linalg.qr(evecs)[0]
@@ -249,7 +295,7 @@ def power_iterations(
 
     for it in range(maxiter):
         if sigma is not None:
-            z = cholespy_factor_and_solve(A - sigma * M, torch.sparse.mm(M, evecs))
+            z = cholespy_factor_and_solve(A - sigma * M, torch.sparse.mm(M, evecs))[1]
         else:
             z = torch.sparse.mm(A, evecs)
         z, _ = torch.linalg.qr(z)

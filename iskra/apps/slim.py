@@ -74,7 +74,7 @@ if __name__ == "__main__":
 
     dtype = torch.double
     device = "cpu"
-    mesh, _ = Mesh.from_path(args.mesh_path, fdtype=dtype, device=device)
+    mesh, _ = Mesh.from_path(args.mesh_path, dtype=dtype, device=device)
     mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices
 
@@ -92,7 +92,7 @@ if __name__ == "__main__":
 
     lap, mass = laplacian(verts, faces, clamp_min=0.0)
     rhs = torch.zeros([verts.shape[0], 2], dtype=dtype, device=device)
-    uv_init = min_quadratic_energy(lap, rhs, bdr, bdr_uv)
+    uv_init = min_quadratic_energy(lap, rhs, bdr, bdr_uv)[1]
     # # print(torch.sort(triangle_areas(face_index(uv_init, faces))))
 
     # param_local = uv_local(uv_init, faces)

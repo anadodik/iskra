@@ -2,7 +2,7 @@
     "python.linting.enabled": true,
     "python.linting.flake8Enabled": false,
     "python.linting.mypyEnabled": false,
-    "python.languageServer": "None", // ruff still cannot do autocompletion
+    "python.languageServer": "Default", // ruff still cannot do autocompletion
     "editor.formatOnSave": true,
     "[python]": {
         "editor.defaultFormatter": "charliermarsh.ruff",

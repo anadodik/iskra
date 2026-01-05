@@ -1,9 +1,11 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+import time
 from typing import Any, Callable, Literal, Sequence, cast
 
 import torch
 
+from iskra.profiling import profile_block, profile_fn
 from iskra.sparse_linalg import gmres_solve
 
 
@@ -83,6 +85,7 @@ def make_solver_layer[T, **P](
     bwd_method: Literal["gmres"] = "gmres",
     bwd_max_iter: int = 200,
     bwd_eps: float = 1e-12,
+    verbose: bool = False,
 ) -> Callable[P, T]:
     if not isinstance(iterates[0], Sequence):
         iterates = [cast(tuple[int, int], iterates)]
@@ -113,27 +116,36 @@ def make_solver_layer[T, **P](
             ctx.save_for_backward(*inputs, *outputs)
 
         @staticmethod
+        @profile_fn(name="SolverFn.forward")
         def forward(*args: P.args, **kwargs: P.kwargs) -> T:
             args_list: list[Any] = list(args)
             for _ in range(fwd_max_iter):
-                outputs = cast(tuple[Any, ...], fn(*args_list, **kwargs))
+                with profile_block("fwd_iter"):
+                    outputs = fn(*args_list, **kwargs)
+                    outputs_tuple = outputs
+                    if not isinstance(outputs_tuple, tuple):
+                        outputs_tuple = (outputs_tuple,)
+                    outputs_tuple = cast(tuple[Any, ...], outputs_tuple)
                 before = torch.cat(
                     [args_list[iterate[0]].flatten() for iterate in iterates]
                 )
                 after = torch.cat(
-                    [outputs[iterate[1]].flatten() for iterate in iterates]
+                    [outputs_tuple[iterate[1]].flatten() for iterate in iterates]
                 )
                 with torch.no_grad():
                     # TODO: figure out criterion
                     difference = torch.norm((before - after).flatten())
                     for iterate in iterates:
-                        args_list[iterate[0]] = outputs[iterate[1]]
+                        args_list[iterate[0]] = outputs_tuple[iterate[1]]
                     if difference < fwd_eps:
                         break
+                    if verbose:
+                        print("Error (forward): ", difference.cpu().detach().item())
             print("Final error (forward): ", difference.cpu().detach().item())
             return outputs
 
         @staticmethod
+        @profile_fn(name="SolverFn.backward")
         def backward(
             ctx, *grads_out: torch.Tensor | None
         ) -> tuple[torch.Tensor | None, ...]:
@@ -151,16 +163,22 @@ def make_solver_layer[T, **P](
                 inputs[iterate[0]] = outputs[iterate[1]]
             vjp_iterate, vjp_params = make_vjp(fn, iterates, argnums, *inputs)
             init = torch.randn_like(grad_iterate)
-            if bwd_method == "gmres":
-                dl_df = -gmres_solve(
-                    lambda z: torch.cat([grad.flatten() for grad in vjp_iterate(z)]),
-                    grad_iterate,
-                    init,
-                    maxiter=bwd_max_iter,
-                    tol=bwd_eps,
-                )
-            else:
-                raise ValueError(f"Unrecognized backwards solver {bwd_method}")
+
+            with profile_block("bwd_optim"):
+                if bwd_method == "gmres":
+                    dl_df = -gmres_solve(
+                        lambda z: torch.cat(
+                            [grad.flatten() for grad in vjp_iterate(z)]
+                        ),
+                        grad_iterate,
+                        init,
+                        maxiter=bwd_max_iter,
+                        tol=bwd_eps,
+                    )
+                else:
+                    raise ValueError(f"Unrecognized backwards solver {bwd_method}")
+
+            # TODO: add verbose to gmres:
             gmres_error = torch.norm(
                 (
                     grad_iterate.flatten()
@@ -168,9 +186,11 @@ def make_solver_layer[T, **P](
                 ).flatten()
             )
             print(f"Final error (backward): {gmres_error.item()}")
-            grad_param = vjp_params(dl_df)
-            for i, argnum in enumerate(argnums):
-                result[argnum] = grad_param[i]
+
+            with profile_block("bwd_inputs"):
+                grad_param = vjp_params(dl_df)
+                for i, argnum in enumerate(argnums):
+                    result[argnum] = grad_param[i]
             return (*result,)
 
     return SolverFn.apply

@@ -302,10 +302,10 @@ class Mesh(torch.nn.Module):
         cls,
         path: Path | str,
         normalize: bool = False,
-        fdtype: torch.dtype = torch.float32,
+        dtype: torch.dtype = torch.float32,
         device: str | torch.device = "cuda",
     ) -> tuple[Self, MeshData]:
-        mesh_data = load(path, fdtype=fdtype, device=device)
+        mesh_data = load(path, dtype=dtype, device=device)
         if mesh_data.triangles.shape[0] > 0 and mesh_data.lines.shape[0] > 0:
             raise ValueError(
                 f"Cannot create Mesh object from file data at {path} ,"

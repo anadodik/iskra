@@ -22,7 +22,7 @@ from iskra.geometry.normals import triangle_normals
 from iskra.geometry.volume import edge_lengths, triangle_areas
 from iskra.mesh import Mesh
 from iskra.random import sample_circle
-from iskra.sparse import diag, min_quadratic_energy, scipy_to_torch
+from iskra.sparse import diag, scipy_to_torch
 from iskra.topology import edge_flaps, face_index, get_subfaces
 
 if __name__ == "__main__":
