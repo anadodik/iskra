@@ -7,7 +7,7 @@ from gemvis.geometry import dual_quat
 
 from iskra.dec import laplacian
 from iskra.mesh import Mesh
-from iskra.sparse import CholeskySolver, min_quadratic_energy
+from iskra.sparse_linalg import _linear_solver_fn, min_quadratic_energy
 
 if __name__ == "__main__":
     """
@@ -33,8 +33,8 @@ if __name__ == "__main__":
     lap, mass = laplacian(verts, faces)
     verts_var = torch.nn.Parameter(verts.clone())
     optim = torch.optim.SGD([verts_var], lr=2_000)
-    mcf_solver = CholeskySolver(mass + t * lap)
-    h1_solver = CholeskySolver(mass + alpha * lap)
+    mcf_solver = _linear_solver_fn(mass + t * lap)
+    h1_solver = _linear_solver_fn(mass + alpha * lap)
     for i in range(500):
         optim.zero_grad()
         diff = mcf_solver(mass @ verts_var) - verts

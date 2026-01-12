@@ -20,7 +20,7 @@ def edge_length_normals(edges: torch.Tensor) -> torch.Tensor:
         Tensor[Float, [Bs, 2]]: *Scaled* normal vectors of each line segment.
     """
     edge_vector = edges[..., 1, :] - edges[..., 0, :]
-    orth_vector = torch.tensor([1.0, -1.0], device=edges.device, dtype=torch.float32)
+    orth_vector = torch.tensor([1.0, -1.0], device=edges.device, dtype=edges.dtype)
     orth_vector = torch.broadcast_to(orth_vector, edge_vector.shape)
     normal = edge_vector[..., (1, 0)] * orth_vector
     assert normal.shape[:-1] == edges.shape[:-2]
@@ -102,6 +102,29 @@ def face_normals(simplices: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("Normals only supported for edges and triangles.")
 
 
+def interior_angles(
+    triangles: torch.Tensor,
+    signed: bool = False,
+    face_normals: torch.Tensor | None = None,
+) -> torch.Tensor:
+    # Get vertices opposite the corner vertex:
+    idcs: list[tuple[int, ...]] = face_to_subface_idcs(2, 1)
+    opposite_vecs = torch.stack([triangles[..., nbh_idx, :] for nbh_idx in idcs], -3)
+    vecs = opposite_vecs - triangles[..., :, None, :]
+    vecs = torch.nn.functional.normalize(vecs, dim=-1)
+
+    cos_theta = torch.linalg.vecdot(vecs[..., :, 0, :], vecs[..., :, 1, :], dim=-1)
+    cross = torch.linalg.cross(vecs[..., :, 0, :], vecs[..., :, 1, :], dim=-1)
+    if signed:
+        if face_normals is None:
+            face_normals = triangle_normals(triangles)
+        sin_theta = torch.linalg.vecdot(cross, face_normals[:, None, :], dim=-1)
+    else:
+        sin_theta = torch.linalg.vector_norm(cross, dim=-1)
+    angles = torch.atan2(sin_theta, cos_theta)
+    return angles
+
+
 def vertex_normals(
     vertices: torch.Tensor,
     faces: torch.Tensor,
@@ -122,22 +145,6 @@ def vertex_normals(
     elif faces.shape[-1] == 3:
         if method in ("default", "angle"):
             face_normals = torch.nn.functional.normalize(face_normals, dim=-1)
-
-            # Get the edge opposite the corner vertex:
-            idcs: list[tuple[int, ...]] = face_to_subface_idcs(2, 1)
-            edge_vectors = torch.stack([faces[:, nbh_idx] for nbh_idx in idcs], -2)
-            edge_vectors = torch.nn.functional.normalize(edge_vectors)
-
-            e1 = torch.roll(edge_vectors, 1, -2)
-            e2 = -torch.roll(edge_vectors, 1, -2)
-
-            cos_theta = torch.linalg.vecdot(edge_vectors, e1, dim=-1)
-            cross = torch.linalg.cross(edge_vectors, e2, dim=-1)
-            sin_theta_sign = torch.sign(
-                torch.linalg.vecdot(cross, face_normals[:, None, :], dim=-1)
-            )
-            sin_theta = sin_theta_sign * torch.linalg.vector_norm(cross, dim=-1)
-            angles = torch.atan2(sin_theta, cos_theta)
 
             normals = torch.zeros([vertices.shape[0], 3], device=face_normals.device)
             broadcast_faces = faces[:, :, None].expand(-1, -1, 3)

@@ -49,9 +49,7 @@ def hodge_1(
     if faces.shape[-1] == 2:
         return diag(1 / edge_lengths(face_index(vertices, faces)))
     elif faces.shape[-1] == 3:
-        weights = cotan_weights(vertices, faces)
-        if clamp_min is not None:
-            weights = weights.clamp(clamp_min)
+        weights = cotan_weights(vertices, faces, clamp_min)
         return diag(weights)
     else:
         raise ValueError(f"hodge_1 not implemented for faces.shape={faces.shape}.")
@@ -93,6 +91,12 @@ def laplacian(
     )
     mass = hodge_0(vertices, faces)
     return lap, mass
+
+
+def laplacian_from_weights(weights: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+    dtype = weights.dtype
+    lap = d_10(faces, dtype=dtype) @ diag(weights) @ d_01(faces, dtype=dtype)
+    return lap
 
 
 def hodge_0_intrinsic(

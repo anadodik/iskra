@@ -12,20 +12,21 @@ import numpy as np
 import torch
 
 import iskra.sparse as sp
+import iskra.sparse_linalg as spla
 from iskra.adjoint import make_solver_layer
-from iskra.dec import d_01, d_10, laplacian
+from iskra.dec import d_01, d_10, laplacian, laplacian_from_weights
 from iskra.geometry import cotan_weights
 from iskra.mesh import Mesh
 from iskra.profiling import global_profiler, profile_block, profile_fn
 from iskra.signed_svd import closest_rot_3x3, polar_3x3, signed_svd
-from iskra.sparse_linalg import (
-    CholespySolver,
-    gmres_solve,
-    make_cholespy_solver,
-    min_quadratic_energy,
-    quad_energy_mat,
+from iskra.topology import (
+    boundary,
+    face_index,
+    get_subfaces,
+    reduce_on_subface,
+    vertex_adjacency,
+    vertex_adjacency_index_edge,
 )
-from iskra.topology import boundary, face_index, get_subfaces, reduce_on_subface
 
 
 @profile_fn
@@ -33,44 +34,68 @@ def arap_step(
     verts_deformed,
     verts_rest,
     cots,
-    halfedges,
+    vert_vert,
     lap,
     bc_idx,
     bc_vals,
-    solver: CholespySolver | None = None,
+    solver: spla.SolverT | None = None,
 ):
     n_vertices = verts_rest.shape[0]
 
-    with profile_block("accumulation"):
-        lines = face_index(verts_rest, halfedges)
+    with profile_block("covs"):
+        lines = face_index(verts_rest, vert_vert)
         vecs = lines[..., 1, :] - lines[..., 0, :]
-        lines_deformed = face_index(verts_deformed, halfedges)
+        lines_deformed = face_index(verts_deformed, vert_vert)
         vecs_deformed = lines_deformed[..., 1, :] - lines_deformed[..., 0, :]
         covs = cots[..., None, None] * vecs_deformed[..., None, :] * vecs[..., :, None]
+        vert_covs = reduce_on_subface(covs, vert_vert[:, 0:1], n_vertices, "sum")
 
     with profile_block("svd"):
-        vert_covs = reduce_on_subface(covs, halfedges[:, 0:1], n_vertices, "sum")
         vert_rot = closest_rot_3x3(vert_covs)
 
     with profile_block("rotation"):
-        halfedge_rot = face_index(vert_rot.mT, halfedges).mean(1)
+        halfedge_rot = face_index(vert_rot.mT, vert_vert).mean(1)
         rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
         rhs = reduce_on_subface(
-            rotated_halfedge_vecs, halfedges[:, 0:1], n_vertices, "sum"
+            rotated_halfedge_vecs, vert_vert[:, 0:1], n_vertices, "sum"
         )
 
     with profile_block("solve"):
-        verts_deformed = min_quadratic_energy(
+        verts_deformed = spla.min_quadratic_energy(
             lap, -rhs, bc_idx, bc_vals, solver=solver
         )[1]
     return verts_deformed, torch.zeros_like(verts_deformed[:, 0])
+
+
+# def arap_step(deformed, verts, cots, vert_vert, lap, handle_idx, handles):
+#     nv = verts.shape[0]
+
+#     # Find covariances
+#     lines = face_index(verts, vert_vert)
+#     vecs = lines[..., 1, :] - lines[..., 0, :]
+#     lines_def = face_index(deformed, vert_vert)
+#     vecs_def = lines_def[..., 1, :] - lines_def[..., 0, :]
+#     covs = cots[..., None, None] * vecs_def[..., None, :] * vecs[..., :, None]
+#     vert_covs = reduce_on_subface(covs, vert_vert[..., 0:1], nv, "sum")
+
+#     # Find closest rotation
+#     vert_rot = closest_rot_3x3(vert_covs)
+
+#     # Rotate using closest rotation
+#     vert_vert_rot = face_index(vert_rot.mT, vert_vert).mean(1)
+#     rotated = cots[:, None] * (vert_vert_rot @ vecs[..., None])[..., 0]
+#     rhs = reduce_on_subface(rotated, vert_vert[..., 0:1], nv, "sum")
+
+#     # Solve for deformation
+#     _, deformed = spla.min_quadratic_energy(lap, -rhs, handle_idx, handles)
+#     return deformed
 
 
 # def arap_step(
 #     verts_deformed: torch.Tensor,
 #     verts: torch.Tensor,
 #     cots: torch.Tensor,
-#     halfedges: torch.Tensor,
+#     vert_vert: torch.Tensor,
 #     lap: torch.Tensor,
 #     bc_idx: torch.Tensor,
 #     bc_vals: torch.Tensor,
@@ -78,17 +103,17 @@ def arap_step(
 # ) -> tuple[torch.Tensor, torch.Tensor]:
 #     n_vertices = verts.shape[0]
 
-#     lines = face_index(verts, halfedges)
+#     lines = face_index(verts, vert_vert)
 #     vecs = lines[..., 1, :] - lines[..., 0, :]
 
-#     lines_deformed = face_index(verts_deformed, halfedges)
+#     lines_deformed = face_index(verts_deformed, vert_vert)
 #     vecs_deformed = lines_deformed[..., 1, :] - lines_deformed[..., 0, :]
 
 #     halfedge_covs = (
 #         cots[..., None, None] * vecs_deformed[..., None, :] * vecs[..., :, None]
 #     )
 
-#     vert_covs = reduce_on_subface(halfedge_covs, halfedges[:, 0:1], n_vertices, "sum")
+#     vert_covs = reduce_on_subface(halfedge_covs, vert_vert[:, 0:1], n_vertices, "sum")
 #     # vert_u, _, vert_vt = signed_svd(vert_covs)
 #     # vert_rot = vert_vt.mT @ vert_u.mT
 #     vert_rot = closest_rot_3x3(vert_covs).mT
@@ -99,17 +124,17 @@ def arap_step(
 #     assert (torch.linalg.det(vert_rot) > 0).all()
 
 #     # Following lines are energy only:
-#     halfedge_vert_rot = face_index(vert_rot, halfedges)[:, 0, ...]
+#     halfedge_vert_rot = face_index(vert_rot, vert_vert)[:, 0, ...]
 #     diff = vecs_deformed - (halfedge_vert_rot @ vecs[..., None])[..., 0]
 #     weighted_dist = cots * torch.linalg.vector_norm(diff, dim=-1, ord=2) ** 2
 
-#     vert_energy = reduce_on_subface(weighted_dist, halfedges[:, 0:1], n_vertices, "sum")
+#     vert_energy = reduce_on_subface(weighted_dist, vert_vert[:, 0:1], n_vertices, "sum")
 
 #     # THIS IS INTERPOLATING ROTATIONS WEIRDLY??? SHRINKWRAP ARTIFACTS?
-#     halfedge_rot = face_index(vert_rot, halfedges).mean(1)
+#     halfedge_rot = face_index(vert_rot, vert_vert).mean(1)
 #     rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
 
-#     rhs = reduce_on_subface(rotated_halfedge_vecs, halfedges[:, 0:1], n_vertices, "sum")
+#     rhs = reduce_on_subface(rotated_halfedge_vecs, vert_vert[:, 0:1], n_vertices, "sum")
 #     verts_deformed = min_quadratic_energy(lap, -rhs, bc_idx, bc_vals, solver=solver)[1]
 #     return verts_deformed, vert_energy
 
@@ -118,11 +143,11 @@ def arap_step(
 def arap_solve(
     verts: torch.Tensor,
     halfedge_weights: torch.Tensor,
-    halfedges: torch.Tensor,
+    vert_vert: torch.Tensor,
     lap: torch.Tensor,
     bc_idx: torch.Tensor,
     bc_vals: torch.Tensor,
-    lap_factors: CholespySolver,
+    lap_factors: spla.SolverT,
     max_iter: int = 100,
     eps: float = 1e-5,
     verbose: bool = False,
@@ -143,7 +168,7 @@ def arap_solve(
     init = verts.clone()
     # TODO: Next line only necessary because of bad gradients with identity matrix?
     init[bc_idx] = bc_vals
-    return solver(init, verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals)
+    return solver(init, verts, halfedge_weights, vert_vert, lap, bc_idx, bc_vals)
 
 
 _MESH_HANDLES = {
@@ -162,60 +187,61 @@ def main(
     handles_path: Path,
     lr: float,
     arap_steps: int,
+    max_steps: int,
 ):
     dtype = torch.double
     device = "cpu"
 
+    # Load meshes
     mesh, _ = Mesh.from_path(mesh_path, dtype=dtype, device=device)
     faces, verts = mesh.topo.faces, mesh.geom.vertices
 
     target_mesh, _ = Mesh.from_path(target_mesh_path, dtype=dtype, device=device)
     _, target_verts = target_mesh.topo.faces, target_mesh.geom.vertices
 
+    # Load handles
     bdr_idx = boundary(faces)[:, 0]
-    bdr_verts = verts[bdr_idx]
-
     with Path(handles_path).open("r") as f:
         control_idx = torch.tensor(
             [int(i) for i in f.readline().split(", ")],
             device=device,
             dtype=torch.int64,
         )
+    handle_idx = torch.cat([bdr_idx, control_idx])
 
-    control_verts = verts[control_idx]
-    bc_idx = torch.cat([bdr_idx, control_idx])
-    bc_vals = torch.cat([bdr_verts, control_verts])
+    vert_vert = vertex_adjacency(faces)
+    weights = cotan_weights(verts, faces, clamp_min=1e-5)
+    vert_vert_weights = vertex_adjacency_index_edge(weights)
+    lap = laplacian_from_weights(weights, faces)
+    unknown_idx = sp.index_complement(mesh.n_vertices, handle_idx)
+    lap_uk = spla.quad_energy_mat(lap, unknown_idx)
+    lap_factors = spla._linear_solver_fn(lap_uk)
 
-    weights = cotan_weights(verts, faces).clamp_min(1e-5)
-    lap, _ = laplacian(verts, faces, clamp_min=1e-5)
-    lap_factors = make_cholespy_solver(
-        quad_energy_mat(lap, sp.index_complement(mesh.n_vertices, bc_idx))
-    )
-
-    edges, _, _ = get_subfaces(faces)
-    _, edge_verts, _ = get_subfaces(edges)
-    halfedges = torch.cat([edge_verts, edge_verts.flip(-1)], 0)
-    halfedge_weights = torch.cat([weights, weights], 0)
-
-    bc_vals = bc_vals.requires_grad_(True)
-    optimizer = torch.optim.SGD([bc_vals], lr=lr)
+    handles = verts[handle_idx]
+    handles = handles.requires_grad_(True)
+    optimizer = torch.optim.SGD([handles], lr=lr)
     optimizer.zero_grad()
     deformed, energy = arap_solve(
-        verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals, lap_factors
+        verts, vert_vert_weights, vert_vert, lap, handle_idx, handles, lap_factors
     )
     loss = ((deformed - target_verts) ** 2).mean()
     loss.backward()
-    global_profiler.dump()
 
     arap_data_igl = igl.ARAPData()
     arap_data_igl.energy = igl.ARAPEnergyType.ARAP_ENERGY_TYPE_SPOKES
     arap_data_igl.max_iter = 100
-    igl.arap_precomputation(
-        verts.numpy(), faces.numpy(), 3, bc_idx.numpy(), arap_data_igl
-    )
-    arap_deformed_igl = igl.arap_solve(
-        bc_vals.detach().numpy(), arap_data_igl, verts.detach().numpy()
-    )
+    with profile_block("igl_arap_precomp"):
+        igl.arap_precomputation(
+            verts.numpy(), faces.numpy(), 3, handle_idx.numpy(), arap_data_igl
+        )
+    with profile_block(f"igl_arap_solve_{arap_data_igl.max_iter}_steps"):
+        arap_deformed_igl = igl.arap_solve(
+            handles.detach().numpy(), arap_data_igl, verts.detach().numpy()
+        )
+
+    global_profiler.dump()
+    global_profiler.summary_to_json()
+
     try:
         import polyscope as ps
 
@@ -234,27 +260,33 @@ def main(
         ps_edges = ps.register_curve_network(
             "edges",
             deformed.detach().numpy(),
-            halfedges.numpy(),
+            vert_vert.numpy(),
             enabled=False,
             radius=0.01,
         )
         ps_mesh.add_scalar_quantity(
             "face_area", mesh.geom.face_areas.numpy(), defined_on="faces"
         )
-        ps_cloud = ps.register_point_cloud("bc", bc_vals.detach().numpy(), enabled=True)
+        ps_cloud = ps.register_point_cloud("bc", handles.detach().numpy(), enabled=True)
         ps_mesh.add_scalar_quantity(
             "energy", energy.detach().numpy(), defined_on="vertices", enabled=True
         )
-        assert bc_vals.grad is not None
+        assert handles.grad is not None
         ps_cloud.add_vector_quantity(
-            "-grad bc", -bc_vals.grad, enabled=True, length=0.15
+            "-grad bc", -handles.grad, enabled=True, length=0.15
         )
-        ps_edges.add_scalar_quantity("cotan", halfedge_weights, defined_on="edges")
+        ps_edges.add_scalar_quantity("cotan", vert_vert_weights, defined_on="edges")
 
         optimizing = False
         optim_step = 0
         out_path = Path(mesh_path.parent, "animation")
         out_path.mkdir(exist_ok=True, parents=True)
+
+        igl.writeOBJ(
+            str(out_path / f"step_handles_{optim_step}.obj"),
+            handles.detach().cpu().numpy(),
+            np.empty([0, 3]),
+        )
 
         def callback():
             nonlocal optimizing, deformed, optim_step, out_path
@@ -264,25 +296,26 @@ def main(
             ):
                 optimizing = not optimizing
             if optimizing:
-                optimizer.zero_grad()
-                deformed, energy = arap_solve(
-                    verts,
-                    halfedge_weights,
-                    halfedges,
-                    lap,
-                    bc_idx,
-                    bc_vals,
-                    lap_factors,
-                    max_iter=arap_steps,
-                )
-                print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
-                loss = ((deformed - target_verts) ** 2).mean()
-                print(f"Loss = {loss.detach().cpu().item()}.")
-                loss.backward()
-                optimizer.step()
+                with profile_block("optim_step"):
+                    optimizer.zero_grad()
+                    deformed, energy = arap_solve(
+                        verts,
+                        vert_vert_weights,
+                        vert_vert,
+                        lap,
+                        handle_idx,
+                        handles,
+                        lap_factors,
+                        max_iter=arap_steps,
+                    )
+                    print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
+                    loss = ((deformed - target_verts) ** 2).mean()
+                    print(f"Loss = {loss.detach().cpu().item()}.")
+                    loss.backward()
+                    optimizer.step()
 
                 optim_step += 1
-                if optim_step % 250 == 0:
+                if optim_step % max_steps == 0:
                     global_profiler.dump()
                     with Path(out_path, f"profile_{optim_step}.json").open("w") as f:
                         f.write(json.dumps(global_profiler.summary_to_json(), indent=2))
@@ -291,9 +324,9 @@ def main(
 
                 with torch.no_grad():
                     print(f"Step {optim_step}.")
-                    ps_cloud.update_point_positions(bc_vals.detach().numpy())
+                    ps_cloud.update_point_positions(handles.detach().numpy())
                     arap_deformed_igl = igl.arap_solve(
-                        bc_vals.detach().numpy(), arap_data_igl, verts.detach().numpy()
+                        handles.detach().numpy(), arap_data_igl, verts.detach().numpy()
                     )
                     igl.writeOBJ(
                         str(out_path / f"step_{optim_step}.obj"),
@@ -302,7 +335,7 @@ def main(
                     )
                     igl.writeOBJ(
                         str(out_path / f"step_handles_{optim_step}.obj"),
-                        bc_vals.detach().cpu().numpy(),
+                        handles.detach().cpu().numpy(),
                         np.empty([0, 3]),
                     )
                     ps_mesh.update_vertex_positions(deformed.detach().numpy())
@@ -326,7 +359,7 @@ def main(
 if __name__ == "__main__":
     """
     python -m iskra.apps.inverse_arap data/hand/hand.obj data/hand/hand_deformed_sculpt.obj --handles data/hand/hand_handles.txt --lr 10 --arap_steps 150
-    python -m iskra.apps.inverse_arap data/penguin/penguin.obj data/penguin/penguin_deformed.obj --handles data/hand/penguin_handles.txt --lr 5 --arap_steps 100
+    python -m iskra.apps.inverse_arap data/penguin/penguin.obj data/penguin/penguin_deformed.obj --handles data/penguin/penguin_handles.txt --lr 5 --arap_steps 100 --steps 150
     python -m iskra.apps.inverse_arap data/armadillo/armadillo.obj data/armadillo/armadillo_deformed.obj --handles data/armadillo/armadillo_handles.txt --lr 10 --arap_steps 200
     python -m iskra.apps.inverse_arap data/springer_rm/springer.obj data/springer_rm/springer_deformed.obj --handles data/springer_rm/springer_handles.txt --lr 5 --arap_steps 100
     """
@@ -342,5 +375,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--arap_steps", default=100, type=int, help="Num. steps for ARAP."
     )
+    parser.add_argument(
+        "--steps", default=250, type=int, help="Num. steps for outer loop."
+    )
     args = parser.parse_args()
-    main(args.mesh_path, args.target_mesh_path, args.handles, args.lr, args.arap_steps)
+    main(
+        args.mesh_path,
+        args.target_mesh_path,
+        args.handles,
+        args.lr,
+        args.arap_steps,
+        args.steps,
+    )

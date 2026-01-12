@@ -7,7 +7,7 @@ import torch
 from iskra.dec import laplacian
 from iskra.geometry import triangle_areas, triangle_coordinate_system
 from iskra.mesh import Mesh
-from iskra.sparse_linalg import CholeskySolver, min_quadratic_energy
+from iskra.sparse_linalg import _linear_solver_fn, min_quadratic_energy
 from iskra.topology import boundary, face_index, get_subfaces, ordered_boundary_edges
 
 
@@ -108,7 +108,7 @@ if __name__ == "__main__":
     uv_opt = torch.nn.Parameter(uv_init)
     lr = 100
     optimizer = torch.optim.SGD([uv_opt], lr=lr)
-    h1_solver = CholeskySolver(mass + 0.5 * lap)
+    h1_solver = _linear_solver_fn(mass + 0.5 * lap)
 
     param_local = uv_local(uv_opt, faces)
     energy = symmetric_dirichlet(rest_local, param_local, rest_areas)

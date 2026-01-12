@@ -37,6 +37,8 @@ def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int
         idcs = [(0, 1), (1, 2), (2, 0), (2, 3), (0, 3), (1, 3)]
     elif face_dim == 2 and subface_dim == 1:
         idcs = [(1, 2), (2, 0), (0, 1)]
+    elif face_dim == 2 and subface_dim == 0:
+        idcs = [(0,), (1,), (2,)]
     elif face_dim == 1 and subface_dim == 0:
         idcs = [(1,), (0,)]
     else:
@@ -193,6 +195,30 @@ def incidence_matrix(
         subface_sign,
         signed=signed,
     )
+
+
+def vertex_adjacency(faces: torch.Tensor) -> torch.Tensor:
+    """Vertex-vertex adjacencies.
+
+    !!! tip
+
+        The faces argument can be an arbitrary simplex. Tets, triangles, and edges all work.
+
+    Args:
+        faces (torch.Tensor): Tensor  representing the mesh topology with shape `[n_faces, n_face_corners]`,
+            where `n_faces` is the number of faces and `n_face_corners` is the number of simplex corners,.
+
+    Returns:
+        torch.Tensor: A dense tensor of shape `[2 * E, 2]`,
+        where E is the number of edges.
+    """
+    edges, _, _ = get_subfaces(faces, subface_dim=1)
+    idx = torch.cat([edges, edges.flip(-1)], -2)
+    return idx
+
+
+def vertex_adjacency_index_edge(values: torch.Tensor) -> torch.Tensor:
+    return torch.cat([values, values], -1)
 
 
 def vertex_adjacency_matrix(n_vertices: int, faces: torch.Tensor) -> torch.Tensor:
@@ -356,6 +382,7 @@ def reduce_on_subface(
     faces: torch.Tensor,
     n_subfaces: int,
     reduce: Literal["sum", "prod", "mean", "amax", "amin"],
+    values_ndim: int | None = None,
 ) -> torch.Tensor:
     """Take values defined on mesh faces and average them onto its vertices.
 
@@ -368,20 +395,24 @@ def reduce_on_subface(
     Returns:
         torch.Tensor: _description_
     """
-    assert values.shape[0] == faces.shape[0]
     assert faces.ndim == 2
 
-    values_shape = values.shape[1:]
-    scattered = torch.zeros(
+    if values_ndim is None:
+        values_ndim = values.ndim - 1
+    idx_ndim = values.ndim - values_ndim
+    values_shape = values.shape[-values_ndim:]
+    assert values.shape[:idx_ndim] == faces.shape[:idx_ndim]
+
+    result = torch.zeros(
         [n_subfaces, *values_shape], dtype=values.dtype, device=values.device
     )
-    broadcast_faces = faces[(...,) + (None,) * len(values_shape)]
+    broadcast_faces = faces[(...,) + (None,) * values_ndim]
     broadcast_faces = broadcast_faces.expand(-1, -1, *values_shape)
     for i in range(faces.shape[-1]):
-        scattered = scattered.scatter_reduce(
+        result = result.scatter_reduce(
             0, broadcast_faces[:, i, ...], values, reduce=reduce
         )
-    return scattered
+    return result
 
 
 def find_cliques(edges: torch.Tensor, max_d: int) -> list[torch.Tensor]:

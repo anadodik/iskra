@@ -15,9 +15,9 @@ from iskra.fem import grad
 from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
 from iskra.sparse_linalg import (
-    CholespySolver,
-    cholespy_factor_and_solve,
-    make_cholespy_solver,
+    SolverT,
+    _linear_solver_fn,
+    linear_solve,
     min_quadratic_energy,
 )
 from iskra.topology import face_index, reduce_on_subface
@@ -34,13 +34,13 @@ def rdg_step(
     alpha: torch.Tensor,
     rho: torch.Tensor,
     alphak: float,
-    lap_solver: CholespySolver | None = None,
+    lap_solver: SolverT | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     # step 1: u-minimization
     div_y = sp.matmul(div, y.flatten())
     div_z = sp.matmul(div, z.flatten())
     b = vert_areas - div_y + rho * div_z
-    u = cholespy_factor_and_solve(lap, b, solver=lap_solver)[1] / (alpha + rho)
+    u = linear_solve(lap, b, solver_fn=lap_solver)[1] / (alpha + rho)
 
     # step 2: z-minimization
     grad_u = sp.matmul(grad, u).reshape(*z.shape)
@@ -109,7 +109,7 @@ def rdg_solve(
     g_unknown = sp.get_slice(g, None, unknown_idx)
     lap_unknown = sp.get_slice(sp.get_slice(lap, unknown_idx, None), None, unknown_idx)
     div_unknown = sp.mul(torch.cat(3 * [tri_areas])[None, :], g_unknown.mT.coalesce())
-    chol = make_cholespy_solver(lap_unknown)
+    chol = _linear_solver_fn(lap_unknown)
 
     solver = make_solver_layer(
         partial(rdg_step, alphak=alphak, lap_solver=chol),
@@ -144,9 +144,7 @@ def rdg_solve(
         - sp.matmul(div_unknown, y.flatten())
         + rho * sp.matmul(div_unknown, z.flatten())
     )
-    u_unknown = cholespy_factor_and_solve(lap_unknown, b, solver=chol)[1] / (
-        alpha + rho
-    )
+    u_unknown = linear_solve(lap_unknown, b, solver_fn=chol)[1] / (alpha + rho)
 
     u = torch.zeros([n_vertices], device=device, dtype=dtype)
     u[unknown_idx] = u_unknown

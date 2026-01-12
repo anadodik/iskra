@@ -154,8 +154,8 @@ def main(
     bc_idx = torch.cat([bdr_idx, control_idx])
     bc_vals = torch.cat([bdr_verts, control_verts])
 
-    weights = cotan_weights(verts, faces)
-    lap, _ = laplacian(verts, faces)
+    weights = cotan_weights(verts, faces).clamp_min(1e-5)
+    lap, _ = laplacian(verts, faces, clamp_min=1e-5)
     edges, _, _ = get_subfaces(faces)
     _, edge_verts, _ = get_subfaces(edges)
     halfedges = torch.cat([edge_verts, edge_verts.flip(-1)], 0)
@@ -163,7 +163,7 @@ def main(
 
     arap_data_igl = igl.ARAPData()
     arap_data_igl.energy = igl.ARAPEnergyType.ARAP_ENERGY_TYPE_SPOKES
-    arap_data_igl.max_iter = 200
+    arap_data_igl.max_iter = 100
     if control_idx.nelement() == 0:
         deformed = verts
         arap_deformed_igl = verts

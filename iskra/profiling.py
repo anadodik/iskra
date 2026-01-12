@@ -154,7 +154,7 @@ def compute_summary(segments: list[ProfileSegment]):
     )
 
 
-def display_profiling_table(root_node):
+def display_profiling_table(roots: list[SegmentSummary]):
     table = Table(
         title="[bold magenta]Iskra Profiling Results[/bold magenta]",
         border_style="bright_blue",
@@ -191,7 +191,8 @@ def display_profiling_table(root_node):
         for i, child in enumerate(node.children):
             add_rows(child, depth + 1, i == len(node.children) - 1, new_prefix)
 
-    add_rows(root_node)
+    for root in roots:
+        add_rows(root)
     return table
 
 
@@ -219,19 +220,15 @@ class Profiler:
     def summary(self):
         block_map = flatten_trees(self.segment_trees)
         roots = []
+        summary_map: dict[tuple[str, ...], SegmentSummary] = {}
         for k, v in block_map.items():
             summary = compute_summary(v)
+            summary_map[k] = summary
             if len(k) == 1:
                 roots.append(summary)
-        for root in roots:
-            stack = [root]
-            while len(stack) > 0:
-                node = stack.pop()
-                for k, v in block_map.items():
-                    if len(k) > 1 and k[-2] == node.name:
-                        summary = compute_summary(v)
-                        node.add_child(summary)
-                        stack.append(summary)
+        for k, v in summary_map.items():
+            if len(k) > 1:
+                summary_map[k[:-1]].add_child(v)
         return roots
 
     def all_to_json(self):
@@ -266,7 +263,7 @@ class Profiler:
                     rich_stack.append(rich_node.add(child.rich_format()))
                     stack.append(child)
 
-        table = display_profiling_table(tree[0])
+        table = display_profiling_table(tree)
         console = Console(
             width=200, soft_wrap=True, color_system="truecolor", record=True
         )

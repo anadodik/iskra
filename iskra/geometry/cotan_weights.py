@@ -6,15 +6,19 @@ from iskra.geometry.volume import edge_lengths
 from iskra.topology import face_index, get_subfaces
 
 
-def cotan_weights(vertices: torch.Tensor, faces: torch.Tensor):
+def cotan_weights(
+    vertices: torch.Tensor, faces: torch.Tensor, clamp_min: float | None = None
+):
     edges, face_to_edge, _ = get_subfaces(faces)
     lines = face_index(vertices, edges)
     lengths = edge_lengths(lines)
-    return cotan_weights_intrinsic(lengths, face_to_edge)
+    return cotan_weights_intrinsic(lengths, face_to_edge, clamp_min)
 
 
 def cotan_weights_intrinsic(
-    edge_lengths: torch.Tensor, face_to_edge: torch.Tensor
+    edge_lengths: torch.Tensor,
+    face_to_edge: torch.Tensor,
+    clamp_min: float | None = None,
 ) -> torch.Tensor:
     face_edge_lengths = edge_lengths[face_to_edge.flatten()].reshape(
         *face_to_edge.shape, *edge_lengths.shape[1:]
@@ -40,4 +44,7 @@ def cotan_weights_intrinsic(
         edge_cot_weights = edge_cot_weights.scatter_add(
             0, face_to_edge[:, edge_i], cot_ij
         )
+
+    if clamp_min is not None:
+        edge_cot_weights = edge_cot_weights.clamp(clamp_min)
     return edge_cot_weights

@@ -11,7 +11,7 @@ from iskra.dec import laplacian
 from iskra.fem import grad
 from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
-from iskra.sparse_linalg import cholespy_factor_and_solve
+from iskra.sparse_linalg import linear_solve
 from iskra.topology import face_index, reduce_on_subface
 
 
@@ -28,7 +28,7 @@ def rdg_step(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     # step 1: u-minimization
     b = vert_areas - sp.matmul(div, y.flatten()) + rho * sp.matmul(div, z.flatten())
-    u = cholespy_factor_and_solve(lap, b)[1] / (alpha + rho)
+    u = linear_solve(lap, b)[1] / (alpha + rho)
 
     # step 2: z-minimization
     grad_u = sp.matmul(grad, u).reshape(*z.shape)
@@ -104,7 +104,7 @@ def rdg_solve(
         - sp.matmul(div_unknown, y.flatten())
         + rho * sp.matmul(div_unknown, z.flatten())
     )
-    u_unknown = cholespy_factor_and_solve(lap_unknown, b)[1] / (alpha + rho)
+    u_unknown = linear_solve(lap_unknown, b)[1] / (alpha + rho)
 
     u = torch.zeros([n_vertices], device=device, dtype=dtype)
     u[unknown_idx] = u_unknown

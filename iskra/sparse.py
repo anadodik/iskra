@@ -8,6 +8,8 @@ import numpy as np
 import scipy.sparse
 import torch
 
+from iskra.profiling import profile_fn
+
 
 def index_complement(n: int, idx: torch.Tensor) -> torch.Tensor:
     unknown_mask = torch.ones([n], dtype=torch.bool, device=idx.device)
@@ -97,6 +99,7 @@ def isect_indices(
 _INDEX_TYPE = None | slice | int | torch.Tensor | tuple[int, ...]
 
 
+@profile_fn(name="_build_index_selection_mask")
 def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
     assert x.layout == torch.sparse_coo
     new_shape = list(x.shape)
@@ -139,6 +142,7 @@ def _build_index_selection_mask(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch
     return mask, new_shape
 
 
+@profile_fn(name="get_slice")
 def get_slice(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
     """Slices a sparse tensor.
 
@@ -157,10 +161,7 @@ def get_slice(x: torch.Tensor, *indices: _INDEX_TYPE) -> torch.Tensor:
         torch.Tensor: Sliced sparse tensor.
     """
     assert x.layout == torch.sparse_coo
-    start_t = time.perf_counter()
     mask, new_shape = _build_index_selection_mask(x, *indices)
-    end_t = time.perf_counter()
-    # print(f"_build_index_selection_mask took: {end_t - start_t}s.")
     selected_idx = x.indices()[:, mask]
     selected_val = x.values()[mask]
 

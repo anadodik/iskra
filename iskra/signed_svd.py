@@ -4,6 +4,8 @@ from typing import Callable
 
 import torch
 
+from iskra.profiling import profile_block, profile_fn
+
 
 class SignedSVD(torch.autograd.Function):
     generate_vmap_rule = True
@@ -145,10 +147,12 @@ def print_grad(x):
     return PrintGrad.apply(x)
 
 
+@profile_fn(name="signed_svd")
 def signed_svd(
     mat: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    u, s, vh = torch.linalg.svd(mat)
+    with profile_block(name="signed_svd.svd"):
+        u, s, vh = torch.linalg.svd(mat)
     repeated_count = (s[..., 1:] == s[..., :-1]).any(-1).count_nonzero()
     if repeated_count > 0:
         print(
@@ -158,50 +162,10 @@ def signed_svd(
     sign[..., -1] = torch.sign(torch.linalg.det(u @ vh))
 
     signed_s = sign * s
-    # I think that flipping either u or vh to ensure both are rotations
-    # introduces additional discontinuities in derivatives.
+    # I think that flipping both u and/or vh to ensure both are rotations
+    # introduces additional discontinuities in derivatives?
     # Therefore we always flip u.
-
-    # det_u = torch.linalg.det(u)
-    # det_v = torch.linalg.det(vh.mH)
-
-    # u_flipped = (det_u[..., None] < 0) & (det_v[..., None] > 0)
-    # sign_u = torch.where(u_flipped, sign, torch.ones_like(s))
     u = u @ torch.diag_embed(sign)
-
-    # v_flipped = (det_u[..., None] > 0) & (det_v[..., None] < 0)
-    # sign_v = torch.where(v_flipped, sign, torch.ones_like(s))
-    # vh = torch.diag_embed(sign_v) @ vh
-    return u, signed_s, vh
-
-
-def signed_svd(
-    mat: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    u, s, vh = torch.linalg.svd(mat)
-    repeated_count = (s[..., 1:] == s[..., :-1]).any(-1).count_nonzero()
-    if repeated_count > 0:
-        print(
-            f"Warning: detected {repeated_count} matrices with repeated singular values."
-        )
-    sign = torch.ones_like(s)
-    sign[..., -1] = torch.sign(torch.linalg.det(u @ vh))
-
-    signed_s = sign * s
-    # I think that flipping either u or vh to ensure both are rotations
-    # introduces additional discontinuities in derivatives.
-    # Therefore we always flip u.
-
-    # det_u = torch.linalg.det(u)
-    # det_v = torch.linalg.det(vh.mH)
-
-    # u_flipped = (det_u[..., None] < 0) & (det_v[..., None] > 0)
-    # sign_u = torch.where(u_flipped, sign, torch.ones_like(s))
-    u = u @ torch.diag_embed(sign)
-
-    # v_flipped = (det_u[..., None] > 0) & (det_v[..., None] < 0)
-    # sign_v = torch.where(v_flipped, sign, torch.ones_like(s))
-    # vh = torch.diag_embed(sign_v) @ vh
     return u, signed_s, vh
 
 
