@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Inverse Geodesics",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "iskra.apps.inverse_geodesics",
+            "args": "/Users/anadodik/repos/RGD/data/spot_rr.off"
+        },
+        {
+            "name": "Inverse ARAP",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "iskra.apps.inverse_arap",
+            "args": "data/armadillo/armadillo.obj data/armadillo/armadillo_deformed.obj --handles data/armadillo/armadillo_handles.txt --step 1"
+        }
+    ]
+}
