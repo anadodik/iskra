@@ -7,7 +7,6 @@ import numpy as np
 import scipy.sparse
 import torch
 from cholespy import CholeskySolverD, CholeskySolverF, MatrixType
-from numpy import indices
 
 try:
     from sksparse import cholmod
@@ -16,10 +15,46 @@ try:
 except ImportError:
     _cholmod_available = False
 
+try:
+    from nvmath.sparse.advanced import DirectSolver
+
+    _nvmath_available = True
+except ImportError:
+    _nvmath_available = False
+
 import iskra.sparse as sp
-from iskra.profiling import profile_fn
+from iskra.profiling import profile_block, profile_fn
 
 SolverT: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
+
+
+class CholmodSolver:
+    def __init__(
+        self,
+        mat: torch.Tensor,
+        analyze_only: bool = False,
+        mode="supernodal",
+        ordering_method="amd",
+    ):
+        with profile_block("solver_init"):
+            if analyze_only:
+                self.solver = cholmod.analyze(
+                    sp.torch_to_scipy(mat), mode=mode, ordering_method=ordering_method
+                )
+            else:
+                self.solver = cholmod.cholesky(
+                    sp.torch_to_scipy(mat), mode=mode, ordering_method=ordering_method
+                )
+
+    @profile_fn(name="refactor_numeric")
+    def refactor_numeric(self, mat: torch.Tensor):
+        mat_sp = sp.torch_to_scipy(mat).tocsc()
+        self.solver.cholesky_inplace(mat_sp)
+
+    def __call__(self, b: torch.Tensor):
+        b_np = b.detach().cpu().numpy()
+        x_np = np.ascontiguousarray(self.solver(b_np))
+        return torch.tensor(x_np, dtype=b.dtype, device=b.device)
 
 
 def _linear_solver_fn(mat: torch.Tensor) -> SolverT:
@@ -46,17 +81,23 @@ def _linear_solver_fn(mat: torch.Tensor) -> SolverT:
             solver.solve(b, x)
             return x
     elif _cholmod_available:
-        solver = cholmod.cholesky(sp.torch_to_scipy(mat.detach().cpu()))
+        # # _solve_fn = CholmodSolver(mat)
 
-        def _solve_fn(b: torch.Tensor) -> torch.Tensor:
-            x = torch.tensor(solver.solve_A(b.detach().cpu().numpy()), device=b.device)
-            return x
+        # solver = cholmod.cholesky(sp.torch_to_scipy(mat))
+
+        # def _solve_fn(b: torch.Tensor):
+        #     b_np = b.detach().cpu().numpy()
+        #     x_np = np.ascontiguousarray(solver.solve_A(b_np))
+        #     return torch.tensor(x_np, dtype=b.dtype, device=b.device)
+        _solve_fn = CholmodSolver(mat)
     else:
         # if mat.dtype == torch.cfloat:
         solver = scipy.sparse.linalg.splu(sp.torch_to_scipy(mat.detach().cpu()))
 
         def _solve_fn(b: torch.Tensor) -> torch.Tensor:
-            x = torch.tensor(solver.solve(b.detach().cpu().numpy()), device=b.device)
+            b_np = b.detach().cpu().numpy()
+            x_np = solver.solve(b_np)
+            x = torch.tensor(x_np, dtype=b.dtype, device=b.device)
             return x
 
     return _solve_fn

@@ -25,7 +25,7 @@ dependencies:
   - pip
   - pip:
       # Core libraries
-      - pytorch
+      - pytorch==2.9
       - numpy
       - scipy
       - networkx

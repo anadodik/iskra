@@ -3,7 +3,7 @@
 import functools
 import json
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import ContextDecorator
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -43,7 +43,12 @@ class TreeNode[T: "TreeNode"]:
         serialized = {}
         for f in fields(self):
             if f.name not in ["children", "parent"]:
-                serialized[f.name] = getattr(self, f.name)
+                name = f.name
+                value = getattr(self, name)
+                serialized[f.name] = value
+                if name.endswith("ns"):
+                    name = name[:-2] + "ms"
+                    serialized[f.name] = value * 1e-6
         serialized["children"] = []
         for child in self.children:
             serialized["children"].append(child.to_json())
@@ -53,9 +58,9 @@ class TreeNode[T: "TreeNode"]:
 def flatten_trees[T: TreeNode](trees: list[T]):
     name_map = defaultdict(list[T])
     for root in trees:
-        stack: list[T] = [root]
+        stack: deque[T] = deque([root])
         while len(stack) > 0:
-            node = stack.pop()
+            node = stack.popleft()
             names = [n.name for n in node.parents()] + [node.name]
             name_map[tuple(names)].append(node)
 

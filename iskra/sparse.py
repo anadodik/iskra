@@ -64,9 +64,14 @@ def scipy_to_torch(
 
 
 def torch_to_scipy(x: torch.Tensor) -> scipy.sparse.coo_array:
-    x = x.to_sparse_coo().coalesce()
-    data = x.values().cpu().numpy()
-    idcs = x.indices().cpu().numpy().astype(np.int64)
+    x = x.detach().to_sparse_coo().coalesce()
+    if x.values().is_cuda:
+        data = x.values().cpu().numpy()
+        idcs = x.indices().cpu().numpy().astype(np.int64)
+    else:
+        # if on CPU, .numpy creates view
+        data = x.values().numpy()
+        idcs = x.indices().numpy().astype(np.int64)
     x_scipy = scipy.sparse.coo_array((data, (idcs[0], idcs[1])), shape=x.shape)
     return x_scipy
 
@@ -334,19 +339,23 @@ def mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.sparse_coo_tensor(idx, new_vals, size=out_shape).coalesce()
 
 
+def is_sparse_any(a: torch.Tensor):
+    return a.is_sparse or a.is_sparse_csr
+
+
 def matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     swapped = False
-    if not a.is_sparse and not b.is_sparse:
+    if not is_sparse_any(a) and not is_sparse_any(b):
         return a @ b
-    elif a.is_sparse and b.is_sparse:
+    elif is_sparse_any(a) and is_sparse_any(b):
         return torch.sparse.mm(a, b)
-    elif b.is_sparse:
+    elif is_sparse_any(b):
         swapped = True
         a, b = b.mT, a.mT
 
     if b.ndim == 1:
         result = torch.sparse.mm(a, b[:, None])[:, 0]
-    elif a.ndim == 2 and b.ndim == 2:
+    elif a.ndim >= 2 and b.ndim >= 2:
         result = torch.sparse.mm(a, b)
     if swapped and result.ndim == 2:
         result = result.mT

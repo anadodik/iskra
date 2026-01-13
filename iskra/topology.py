@@ -400,7 +400,10 @@ def reduce_on_subface(
     if values_ndim is None:
         values_ndim = values.ndim - 1
     idx_ndim = values.ndim - values_ndim
-    values_shape = values.shape[-values_ndim:]
+    if values_ndim == 0:
+        values_shape = []
+    else:
+        values_shape = values.shape[-values_ndim:]
     assert values.shape[:idx_ndim] == faces.shape[:idx_ndim]
 
     result = torch.zeros(
