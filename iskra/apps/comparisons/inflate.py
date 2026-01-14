@@ -15,13 +15,21 @@ import iskra.sparse as sp
 from iskra import dec
 from iskra.mesh import Mesh
 from iskra.profiling import global_profiler, profile_block
-from iskra.sparse_linalg import CholmodSolver, _linear_solver_fn, linear_solve
+from iskra.sparse_linalg import (
+    CholmodSolver,
+    CUDSSSolver,
+    _linear_solver_fn,
+    linear_solve,
+)
 
 
 def iskra_setup(
     verts: torch.Tensor, lap: torch.Tensor, mass: torch.Tensor, t: float
-) -> CholmodSolver:
-    return CholmodSolver(mass + t * lap, analyze_only=True)
+) -> CholmodSolver | CUDSSSolver:
+    if verts.is_cpu:
+        return CholmodSolver(mass + t * lap, analyze_only=True)
+    else:
+        return CUDSSSolver(mass + t * lap, analyze_only=True)
 
 
 def iskra_forward(
@@ -43,7 +51,7 @@ def iskra_forward(
 def alec_setup(
     verts: torch.Tensor, lap: torch.Tensor, mass: torch.Tensor, t: float
 ) -> None:
-    return None
+    return
 
 
 def alec_forward(
@@ -215,7 +223,7 @@ def main(
         # larges successful was around 600 vertices.
         return
 
-    inflated = optimize(verts, faces, t, 0.001, 2, method)
+    inflated = optimize(verts, faces, t, 0.01, 2_000, method)
 
     with Path(results_dir, "profile.json").open("w") as f:
         f.write(json.dumps(global_profiler.summary_to_json(), indent=2))
@@ -223,6 +231,14 @@ def main(
 
     lap, mass = dec.laplacian(verts, faces)
     faired = linear_solve((mass + t * lap).coalesce(), mass @ verts)[1]
+    import igl
+
+    Path("results").mkdir(exist_ok=True)
+    igl.writeOBJ(
+        Path("results") / f"inflated_{mesh_path.stem}_{method}_{device}.obj",
+        inflated.detach().cpu().numpy(),
+        faces.detach().cpu().numpy(),
+    )
     return
     try:
         ps.init()

@@ -16,7 +16,8 @@ except ImportError:
     _cholmod_available = False
 
 try:
-    from nvmath.sparse.advanced import DirectSolver
+    import cuda.core.experimental as cudax
+    import nvmath.sparse.advanced as nvsparse
 
     _nvmath_available = True
 except ImportError:
@@ -55,6 +56,56 @@ class CholmodSolver:
         b_np = b.detach().cpu().numpy()
         x_np = np.ascontiguousarray(self.solver(b_np))
         return torch.tensor(x_np, dtype=b.dtype, device=b.device)
+
+
+class CUDSSSolver:
+    def __init__(self, mat: torch.Tensor, analyze_only: bool = False):
+        with profile_block("solver_init"):
+            device = mat.device
+            dtype = mat.dtype
+
+            self.dummy_b = torch.zeros((1, mat.shape[0]), dtype=dtype, device=device).mT
+            self.mat_csr = mat.to_sparse_csr()
+
+            self.options = nvsparse.DirectSolverOptions()
+            self.options.multithreading_lib = "openmp"
+
+            self.solver = nvsparse.DirectSolver(
+                self.mat_csr, self.dummy_b, options=self.options
+            )
+            self.solver.plan()
+
+            if not analyze_only:
+                self.solver.factorize()
+
+    @profile_fn(name="refactor_numeric")
+    def refactor_numeric(self, mat: torch.Tensor):
+        new_values = mat.to_sparse_csr().values()
+        self.mat_csr.values().data.copy_(new_values)
+        self.solver.factorize()
+
+    def __call__(self, b: torch.Tensor):
+        device = b.device
+        device_id = device.index if device.type == "cuda" else 0
+        cudax.Device(device_id).set_current()
+        b_reshaped = b[:, None] if b.ndim == 1 else b
+        if b.shape != self.dummy_b.shape:
+            self.dummy_b = b.mT.contiguous().mT
+            self.solver.free()
+            self.solver = nvsparse.DirectSolver(
+                self.mat_csr, self.dummy_b, options=self.options
+            )
+            self.solver.plan()
+            self.solver.factorize()
+        else:
+            self.solver.reset_operands(None, b_reshaped.mT.contiguous().mT)
+        x: torch.Tensor = self.solver.solve()
+        torch.cuda.default_stream().synchronize()
+        return x[:, 0] if b.ndim == 1 else x
+
+    def __del__(self):
+        if hasattr(self, "solver"):
+            self.solver.free()
 
 
 def _linear_solver_fn(mat: torch.Tensor) -> SolverT:
