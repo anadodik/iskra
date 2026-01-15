@@ -29,10 +29,17 @@ def diag(values: torch.Tensor) -> torch.Tensor:
     if values.ndim == 2 and values.shape[-1] == 1:
         values = values.squeeze(-1)
     assert values.ndim == 1
-    n = values.shape[0]
-    idx = torch.arange(n, device=values.device)
-    ii = torch.stack(2 * [idx])
-    return torch.sparse_coo_tensor(ii, values, size=[n, n]).coalesce()
+    if not values.is_sparse:
+        n = values.shape[0]
+        idx = torch.arange(n, device=values.device)
+        ii = torch.stack(2 * [idx])
+        return torch.sparse_coo_tensor(ii, values, size=[n, n]).coalesce()
+    else:
+        idx = values.indices()
+        vals = values.values()
+        ii = torch.cat([idx, idx[-1:]])
+        shape = [*values.shape, values.shape[-1]]
+        return torch.sparse_coo_tensor(ii, vals, size=shape).coalesce()
 
 
 def get_diag(mat: torch.Tensor) -> torch.Tensor:
@@ -320,13 +327,16 @@ def mul_sparse_sparse(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 
 def mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    if not a.is_sparse and not b.is_sparse:
+    # TODO: csr matrices
+    if not is_sparse_any(a) and not is_sparse_any(b):
         return a * b
-    elif a.is_sparse and b.is_sparse:
+    elif is_sparse_any(a) and is_sparse_any(b):
         return mul_sparse_sparse(a, b)
     elif b.is_sparse:
         a, b = b, a
 
+    if not a.is_coalesced():
+        a = a.coalesce()
     idx = a.indices()
     val = a.values()
     out_shape = torch.broadcast_shapes(a.shape, b.shape)
@@ -352,9 +362,11 @@ def matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     elif is_sparse_any(b):
         swapped = True
         a, b = b.mT, a.mT
+    if a.is_sparse and not a.is_sparse_csr:
+        a = a.to_sparse_csr()
 
     if b.ndim == 1:
-        result = torch.sparse.mm(a, b[:, None])[:, 0]
+        result = torch.sparse.mm(a, b[..., None])[:, 0]
     elif a.ndim >= 2 and b.ndim >= 2:
         result = torch.sparse.mm(a, b)
     if swapped and result.ndim == 2:

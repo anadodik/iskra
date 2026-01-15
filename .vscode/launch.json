@@ -8,8 +8,9 @@
             "name": "Inverse Geodesics",
             "type": "debugpy",
             "request": "launch",
+            "justMyCode": false,
             "module": "iskra.apps.inverse_geodesics",
-            "args": "/Users/anadodik/repos/RGD/data/spot_rr.off"
+            "args": "~/Dropbox/Data/iskra-data/geodesics/plane.obj"
         },
         {
             "name": "Inverse ARAP",

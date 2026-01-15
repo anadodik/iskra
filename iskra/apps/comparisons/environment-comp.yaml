@@ -6,3 +6,5 @@ dependencies:
   - pip:
       - theseus-ai
       - git+https://github.com/alecjacobson/pytorch-sparse-solve.git
+      - cvxpylayers
+      - pandas

@@ -24,9 +24,12 @@ except ImportError:
     _nvmath_available = False
 
 import iskra.sparse as sp
+from iskra.logging.logging import getLogger
 from iskra.profiling import profile_block, profile_fn
 
 SolverT: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
+
+LOGGER = getLogger(__name__)
 
 
 class CholmodSolver:
@@ -67,8 +70,7 @@ class CUDSSSolver:
             self.dummy_b = torch.zeros((1, mat.shape[0]), dtype=dtype, device=device).mT
             self.mat_csr = mat.to_sparse_csr()
 
-            self.options = nvsparse.DirectSolverOptions()
-            self.options.multithreading_lib = "openmp"
+            self.options = self.new_default_options()
 
             self.solver = nvsparse.DirectSolver(
                 self.mat_csr, self.dummy_b, options=self.options
@@ -77,6 +79,11 @@ class CUDSSSolver:
 
             if not analyze_only:
                 self.solver.factorize()
+
+    def new_default_options(self):
+        self.options = nvsparse.DirectSolverOptions()
+        self.options.multithreading_lib = "openmp"
+        self.options.blocking = True
 
     @profile_fn(name="refactor_numeric")
     def refactor_numeric(self, mat: torch.Tensor):
@@ -88,9 +95,16 @@ class CUDSSSolver:
         device = b.device
         device_id = device.index if device.type == "cuda" else 0
         cudax.Device(device_id).set_current()
-        b_reshaped = b[:, None] if b.ndim == 1 else b
-        if b.shape != self.dummy_b.shape:
-            self.dummy_b = b.mT.contiguous().mT
+        if b.ndim > 1 and b.shape[-1] != 1:
+            b_reshaped = b.mT.contiguous().mT.clone()
+        elif b.ndim > 1 and b.shape[-1] == 1:
+            b_reshaped = b[..., 0].clone()
+        else:
+            b_reshaped = b.clone()
+        if b_reshaped.shape != self.dummy_b.shape:
+            self.dummy_b = b_reshaped
+            self.options = self.new_default_options()
+            self.mat_csr = self.mat_csr.clone()
             self.solver.free()
             self.solver = nvsparse.DirectSolver(
                 self.mat_csr, self.dummy_b, options=self.options
@@ -98,51 +112,56 @@ class CUDSSSolver:
             self.solver.plan()
             self.solver.factorize()
         else:
-            self.solver.reset_operands(None, b_reshaped.mT.contiguous().mT)
+            self.solver.reset_operands(None, b_reshaped)
         x: torch.Tensor = self.solver.solve()
         torch.cuda.default_stream().synchronize()
-        return x[:, 0] if b.ndim == 1 else x
+        if b.ndim > 1 and b.shape[-1] == 1:
+            return x[..., None]
+        else:
+            return x.clone()
 
     def __del__(self):
         if hasattr(self, "solver"):
-            self.solver.free()
+            try:
+                self.solver.free()
+                self.solver = None
+                torch.cuda.default_stream().synchronize()
+            except Exception as e:
+                print(f"Error while freeing solver: {e}")
 
 
-def _linear_solver_fn(mat: torch.Tensor) -> SolverT:
+def default_solver(
+    mat: torch.Tensor, analyze_only: bool = False, is_psd: bool = True
+) -> SolverT:
+    # TODO: better support for LU
     mat = mat.coalesce()
-    if mat.device != torch.device("cpu") or not _cholmod_available:
-        if mat.dtype == torch.float32:
-            solver_t = CholeskySolverF
-        elif mat.dtype == torch.float64:
-            solver_t = CholeskySolverD
-        else:
-            raise TypeError(
-                f"Cholespy only supports f32 and f64 matrices, found {mat.dtype}."
+    if is_psd:
+        if mat.is_cpu and _cholmod_available:
+            _solve_fn = CholmodSolver(mat, analyze_only=analyze_only)
+        elif mat.is_cuda and _nvmath_available:
+            _solve_fn = CUDSSSolver(mat, analyze_only=analyze_only)
+        elif mat.device != torch.device("cpu") or not _cholmod_available:
+            if mat.dtype == torch.float32:
+                solver_t = CholeskySolverF
+            elif mat.dtype == torch.float64:
+                solver_t = CholeskySolverD
+            else:
+                raise TypeError(
+                    f"Cholespy only supports f32 and f64 matrices, found {mat.dtype}."
+                )
+            solver = solver_t(
+                mat.shape[0],
+                mat.indices()[0],
+                mat.indices()[1],
+                mat.values(),
+                MatrixType.COO,
             )
-        solver = solver_t(
-            mat.shape[0],
-            mat.indices()[0],
-            mat.indices()[1],
-            mat.values(),
-            MatrixType.COO,
-        )
 
-        def _solve_fn(b: torch.Tensor) -> torch.Tensor:
-            x = torch.zeros_like(b)
-            solver.solve(b, x)
-            return x
-    elif _cholmod_available:
-        # # _solve_fn = CholmodSolver(mat)
-
-        # solver = cholmod.cholesky(sp.torch_to_scipy(mat))
-
-        # def _solve_fn(b: torch.Tensor):
-        #     b_np = b.detach().cpu().numpy()
-        #     x_np = np.ascontiguousarray(solver.solve_A(b_np))
-        #     return torch.tensor(x_np, dtype=b.dtype, device=b.device)
-        _solve_fn = CholmodSolver(mat)
+            def _solve_fn(b: torch.Tensor) -> torch.Tensor:
+                x = torch.zeros_like(b)
+                solver.solve(b, x)
+                return x
     else:
-        # if mat.dtype == torch.cfloat:
         solver = scipy.sparse.linalg.splu(sp.torch_to_scipy(mat.detach().cpu()))
 
         def _solve_fn(b: torch.Tensor) -> torch.Tensor:
@@ -179,7 +198,7 @@ class LinearFactorAndSolve(torch.autograd.Function):
         if not mat.is_coalesced():
             raise ValueError("Matrix not coalesced, please call .coalesce() first.")
         if solver_fn is None:
-            solver_fn = _linear_solver_fn(mat)
+            solver_fn = default_solver(mat)
             assert solver_fn is not None
         x = _call_solver(solver_fn, b)
         return solver_fn, x

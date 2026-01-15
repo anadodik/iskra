@@ -16,20 +16,17 @@ from iskra import dec
 from iskra.mesh import Mesh
 from iskra.profiling import global_profiler, profile_block
 from iskra.sparse_linalg import (
-    CholmodSolver,
     CUDSSSolver,
-    _linear_solver_fn,
+    SolverT,
+    default_solver,
     linear_solve,
 )
 
 
 def iskra_setup(
     verts: torch.Tensor, lap: torch.Tensor, mass: torch.Tensor, t: float
-) -> CholmodSolver | CUDSSSolver:
-    if verts.is_cpu:
-        return CholmodSolver(mass + t * lap, analyze_only=True)
-    else:
-        return CUDSSSolver(mass + t * lap, analyze_only=True)
+) -> SolverT:
+    return default_solver(mass + t * lap, analyze_only=True)
 
 
 def iskra_forward(
@@ -37,7 +34,7 @@ def iskra_forward(
     lap: torch.Tensor,
     mass: torch.Tensor,
     t: float,
-    solver: CholmodSolver,
+    solver: SolverT,
 ) -> torch.Tensor:
     mat = (mass + t * lap).coalesce()
     # TODO: figure this out:
@@ -89,19 +86,16 @@ def theseus_setup(
         r = torch.cat([r_data, r_smooth], dim=0)
         return 0.5 * r.reshape(1, -1)
 
-    mass_sqrt = sp.diag(torch.sqrt(sp.get_diag(mass).to_dense()))
+    mass_sqrt = mass.to_dense().sqrt()
     eigvals, eigvecs = torch.linalg.eigh(lap.to_dense())
     eigvals = torch.clamp(eigvals, min=0.0)
-    lap_sqrt = eigvecs @ torch.diag(torch.sqrt(eigvals)) @ eigvecs.T
-    # lap_sqrt = torch.linalg.cholesky(lap.to_dense())
-    lap_sqrt = lap_sqrt.to_dense().to(dtype=verts.dtype)
-    mass_sqrt = mass_sqrt.to_dense().to(dtype=verts.dtype)
+    lap_sqrt = eigvecs @ torch.diag(eigvals.sqrt()) @ eigvecs.T
 
     n_verts, dim = verts.shape
-    verts_var = th.Vector(dof=n_verts * dim, dtype=verts.dtype, name="verts_var")
-    verts_target = th.Variable(tensor=verts.reshape(1, -1), name="verts_target")
-    lap_sqrt_var = th.Variable(tensor=lap_sqrt.unsqueeze(0), name="lap_sqrt_var")
-    mass_sqrt_var = th.Variable(tensor=mass_sqrt.unsqueeze(0), name="mass_sqrt_var")
+    verts_var = th.Vector(dof=n_verts * dim, dtype=verts.dtype, name="verts")
+    verts_target = th.Variable(verts.reshape(1, -1), name="verts_target")
+    lap_sqrt_var = th.Variable(lap_sqrt[None, :], name="lap_sqrt")
+    mass_sqrt_var = th.Variable(mass_sqrt[None, :], name="mass_sqrt")
     cost_weight = th.ScaleCostWeight(
         torch.tensor(1.0, dtype=verts.dtype, device=verts.device)
     )
@@ -128,25 +122,22 @@ def theseus_forward(
     t: float,
     th_layer: th.TheseusLayer,
 ) -> torch.Tensor:
-    mass_sqrt = sp.diag(torch.sqrt(sp.get_diag(mass).to_dense()))
-
+    mass_sqrt = mass.to_dense().sqrt()
     eigvals, eigvecs = torch.linalg.eigh(lap.to_dense())
     eigvals = torch.clamp(eigvals, min=0.0)
-    lap_sqrt = eigvecs @ torch.diag(torch.sqrt(eigvals)) @ eigvecs.T
+    lap_sqrt = eigvecs @ torch.diag(eigvals.sqrt()) @ eigvecs.T
 
-    lap_sqrt = lap_sqrt.to_dense()
-    mass_sqrt = mass_sqrt.to_dense()
     inputs = {
-        "verts_var": verts.reshape(1, -1),
+        "verts": verts.reshape(1, -1),
         "verts_target": verts.reshape(1, -1),
-        "lap_sqrt_var": lap_sqrt.unsqueeze(0),
-        "mass_sqrt_var": mass_sqrt.unsqueeze(0),
+        "lap_sqrt": lap_sqrt[None, :],
+        "mass_sqrt": mass_sqrt[None, :],
     }
     solution, info = th_layer.forward(
         inputs,
-        optimizer_kwargs={"track_best_solution": True, "verbose": True},
+        optimizer_kwargs={"track_best_solution": True, "verbose": False},
     )
-    faired = solution["verts_var"].reshape(*verts.shape)
+    faired = solution["verts"].reshape(*verts.shape)
     return faired
 
 
@@ -169,7 +160,7 @@ def optimize(
     optim = torch.optim.SGD([verts_param], lr=lr)
     lap, mass = dec.laplacian(verts, faces)
     d_01 = dec.d_01(faces, dtype=verts.dtype)
-    h1_solver = _linear_solver_fn(mass + alpha * lap)
+    h1_solver = default_solver(mass + alpha * lap)
 
     setup_fn, forward_fn = FN_MAP[method]
     with profile_block(method):
@@ -186,8 +177,7 @@ def optimize(
                 diff = faired - verts
                 mass = mass.to_sparse_csr()
                 loss = sp.matmul(diff.mT, sp.matmul(mass, diff))
-                loss = loss.diagonal(dim1=-1, dim2=-2).sum()
-                loss = loss
+                loss = loss.diagonal(dim1=-1, dim2=-2).sum(-1).mean()
             with profile_block("backward"):
                 loss.backward()
             if verts_param.grad is None:
@@ -208,6 +198,7 @@ def main(
     dtype_name: str,
 ):
     torch.set_num_threads(16)
+    torch.autograd.detect_anomaly(True)
     device = torch.device(device_name)
     dtype = getattr(torch, dtype_name)
 
@@ -220,10 +211,15 @@ def main(
 
     if method == "theseus" and verts.shape[0] > 1_000:
         # theseus runs out of memory on large meshes on my machine,
-        # larges successful was around 600 vertices.
+        # larges successful was less than 600 vertices.
+        print("Too large, will crash. Early exit.")
         return
-
-    inflated = optimize(verts, faces, t, 0.01, 2_000, method)
+    lr = 100
+    if verts.shape[0] < 500:
+        lr = 1
+    elif mesh_path.stem in ["sapphos_head", "cow"]:
+        lr = 2_000
+    inflated = optimize(verts, faces, t, 0.01, lr, method)
 
     with Path(results_dir, "profile.json").open("w") as f:
         f.write(json.dumps(global_profiler.summary_to_json(), indent=2))
@@ -231,28 +227,39 @@ def main(
 
     lap, mass = dec.laplacian(verts, faces)
     faired = linear_solve((mass + t * lap).coalesce(), mass @ verts)[1]
+    reconstructed = linear_solve((mass + t * lap).coalesce(), mass @ inflated)[1]
+
     import igl
 
-    Path("results").mkdir(exist_ok=True)
     igl.writeOBJ(
-        Path("results") / f"inflated_{mesh_path.stem}_{method}_{device}.obj",
+        results_dir / f"inflated_{mesh_path.stem}_{method}_{device}.obj",
         inflated.detach().cpu().numpy(),
+        faces.detach().cpu().numpy(),
+    )
+    igl.writeOBJ(
+        results_dir / f"init_{mesh_path.stem}_{method}_{device}.obj",
+        verts.detach().cpu().numpy(),
         faces.detach().cpu().numpy(),
     )
     return
     try:
         ps.init()
         ps.register_surface_mesh(
-            "Init", verts.detach().cpu().numpy(), faces.detach().cpu().numpy()
+            "init", verts.detach().cpu().numpy(), faces.detach().cpu().numpy()
         )
         ps.register_surface_mesh(
-            "Deflated",
+            "deflated",
             faired.detach().cpu().numpy(),
+            faces.detach().cpu().numpy(),
+        )
+        ps.register_surface_mesh(
+            "reconstructed",
+            reconstructed.detach().cpu().numpy(),
             faces.detach().cpu().numpy(),
         )
 
         ps.register_surface_mesh(
-            "IskraInflated",
+            "inflated",
             inflated.detach().cpu().numpy(),
             faces.detach().cpu().numpy(),
         )
@@ -261,11 +268,11 @@ def main(
         #     inflated_theseus.detach().cpu().numpy(),
         #     faces.detach().cpu().numpy(),
         # )
-        ps.register_surface_mesh(
-            "AlecInflated",
-            inflated_alec.detach().cpu().numpy(),
-            faces.detach().cpu().numpy(),
-        )
+        # ps.register_surface_mesh(
+        #     "AlecInflated",
+        #     inflated_alec.detach().cpu().numpy(),
+        #     faces.detach().cpu().numpy(),
+        # )
         ps.show()
     except ImportError:
         print(
@@ -279,6 +286,7 @@ if __name__ == "__main__":
     python -m iskra.apps.comparisons.inflate ~/cgbcdata/open_cube.obj --t 0.04
     python -m iskra.apps.comparisons.inflate ~/cgbcdata/sphere.obj --t 0.04
     python -m iskra.apps.comparisons.inflate ~/cgbcdata/venus.obj --t 0.04
+    python -m iskra.apps.comparisons.inflate ~/Dropbox/Data/iskra-data/mcf/cow.obj --t 0.02 --device cuda --method iskra --dtype float64
     """
     default_results_dir = Path().home() / "experiments" / "iskra" / "mcf"
     default_results_dir.mkdir(exist_ok=True, parents=True)

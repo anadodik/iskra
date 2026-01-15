@@ -9,9 +9,9 @@ def main():
     results_root_dir.mkdir(exist_ok=True, parents=True)
 
     mesh_paths = list(mesh_dir.glob("*.obj"))
-    devices = ["cpu"]  # , "cuda"
-    dtypes = ["float32", "float64"]
-    methods = ["iskra", "alec", "theseus"]
+    devices = ["cpu", "cuda"]
+    dtypes = ["float64"]
+    methods = ["theseus"]  # "iskra", "alec",
     script_module = "iskra.apps.comparisons.inflate"
     t_value = 0.001
 
@@ -42,7 +42,7 @@ def main():
         ]
 
         try:
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            result = subprocess.run(cmd, check=True, capture_output=False, text=True)
             print("  ✓ Success\n")
         except subprocess.CalledProcessError as e:
             print(f"  ✗ Failed: {e.stderr}\n")

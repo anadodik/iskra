@@ -9,7 +9,7 @@ from iskra.dec import laplacian
 from iskra.geometry import triangle_areas, triangle_coordinate_system
 from iskra.mesh import Mesh
 from iskra.sparse import diag, repdiag, torch_to_scipy
-from iskra.sparse_linalg import _linear_solver_fn, eigsh
+from iskra.sparse_linalg import default_solver, eigsh
 from iskra.topology import boundary, face_index, get_subfaces
 
 
@@ -97,7 +97,7 @@ if __name__ == "__main__":
     lr = 0.01
     optimizer = torch.optim.SGD([verts_opt], lr=lr)
     lap, mass = laplacian(verts, faces, clamp_min=0.0)
-    h1_solver = _linear_solver_fn(mass + 0.8 * lap)
+    h1_solver = default_solver(mass + 0.8 * lap)
     uv_opt = compute_scp(verts_opt, faces)
 
     def step_fn():

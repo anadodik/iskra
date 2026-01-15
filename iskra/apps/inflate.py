@@ -10,7 +10,7 @@ import iskra.sparse as sp
 from iskra.dec import laplacian
 from iskra.mesh import Mesh
 from iskra.profiling import global_profiler, profile_block
-from iskra.sparse_linalg import _linear_solver_fn, linear_solve
+from iskra.sparse_linalg import default_solver, linear_solve
 
 if __name__ == "__main__":
     """
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     optim = torch.optim.SGD([verts_var], lr=2_000)
     lap, mass = laplacian(verts, faces)
     # mcf_solver = _linear_solver_fn(mass + t * lap)
-    h1_solver = _linear_solver_fn(mass + alpha * lap)
+    h1_solver = default_solver(mass + alpha * lap)
     for i in range(10):
         optim.zero_grad()
         with profile_block("forward"):

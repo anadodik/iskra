@@ -4,8 +4,8 @@ from typing import Literal
 
 import torch
 
+import iskra.sparse as sp
 from iskra.geometry.volume import edge_lengths, volume_form, volume_form_intrinsic
-from iskra.sparse import diag
 from iskra.topology import face_index, reduce_on_subface
 
 
@@ -14,7 +14,7 @@ def mass(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     volume = volume_form(embedded_faces)
     n_corners = faces.shape[-1]
     dual_volume = reduce_on_subface(volume / n_corners, faces, vertices.shape[0], "sum")
-    return diag(dual_volume)
+    return sp.diag(dual_volume)
 
 
 def mass_inv(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
@@ -22,7 +22,7 @@ def mass_inv(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     volume = volume_form(embedded_faces)
     n_corners = faces.shape[-1]
     dual_volume = reduce_on_subface(volume / n_corners, faces, vertices.shape[0], "sum")
-    return diag(1 / dual_volume)
+    return sp.diag(1 / dual_volume)
 
 
 def mass_intrinsic(
@@ -34,7 +34,7 @@ def mass_intrinsic(
     area = volume_form_intrinsic(edge_lengths, face_to_edge)
     n_corners = faces.shape[-1]
     vertex_areas = reduce_on_subface(area / n_corners, faces, n_vertices, "sum")
-    return diag(vertex_areas)
+    return sp.diag(vertex_areas)
 
 
 def mass_intrinsic_inv(
@@ -46,7 +46,7 @@ def mass_intrinsic_inv(
     area = volume_form_intrinsic(edge_lengths, face_to_edge)
     n_corners = faces.shape[-1]
     vertex_areas = reduce_on_subface(area / n_corners, faces, n_vertices, "sum")
-    return diag(1 / vertex_areas)
+    return sp.diag(1 / vertex_areas)
 
 
 def grad_triangle_3d(
@@ -96,7 +96,9 @@ def grad_triangle_3d(
     return grad_x.coalesce(), grad_y.coalesce(), grad_z.coalesce()
 
 
-def grad_triangle_2d(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+def grad_triangle_2d(
+    vertices: torch.Tensor, faces: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Finite element gradient matrix for 2d triangles.
 
     Given a triangle mesh in 2d, computes the finite element gradient matrix
@@ -193,7 +195,9 @@ def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
     return grad
 
 
-def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
+def grad(
+    vertices: torch.Tensor, faces: torch.Tensor, stack: bool = False
+) -> torch.Tensor | tuple[torch.Tensor, ...]:
     """Finite element gradient matrix.
 
     Given a triangle mesh or a polyline, computes the finite element gradient matrix
@@ -210,11 +214,25 @@ def grad(vertices: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
     where S is 1 for polyline, 2 for triangle mesh in 2d, and 3 for triangle mesh in 3d
     """
     if faces.shape[-1] == 2:
-        return grad_edges(vertices, faces)
+        grads = grad_edges(vertices, faces)
     if vertices.shape[-1] == 2:
-        return grad_triangle_2d(vertices, faces)
+        grads = grad_triangle_2d(vertices, faces)
     elif vertices.shape[-1] == 3:
-        return grad_triangle_3d(vertices, faces)
+        grads = grad_triangle_3d(vertices, faces)
+    else:
+        raise ValueError(f"Gradients not implemented for dim = {vertices.shape[-1]}")
+
+    if stack:
+        return sp.cat(grads, -2)
+    else:
+        return grads
+
+
+def grad_to_div(g: torch.Tensor, tri_areas: torch.Tensor) -> torch.Tensor:
+    g_dim = g.shape[0] // tri_areas.shape[-1]
+    assert g_dim == 3
+    areas = torch.cat(g_dim * [tri_areas])
+    return sp.mul(areas[..., None, :], g.mT)
 
 
 def laplacian(

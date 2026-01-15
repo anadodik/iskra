@@ -8,21 +8,27 @@ from typing import TYPE_CHECKING
 
 import torch
 
+torch.set_num_threads(16)
+torch.set_num_interop_threads(16)
+
 import iskra.sparse as sp
 from iskra.adjoint import compute_numerical_jacobian, make_solver_layer
 from iskra.dec import laplacian
-from iskra.fem import grad
+from iskra.fem import grad, grad_to_div
 from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
+from iskra.profiling import global_profiler, profile_fn
 from iskra.sparse_linalg import (
+    CholmodSolver,
     SolverT,
-    _linear_solver_fn,
+    default_solver,
     linear_solve,
     min_quadratic_energy,
 )
 from iskra.topology import face_index, reduce_on_subface
 
 
+@profile_fn(name="rgd_step")
 def rdg_step(
     y: torch.Tensor,
     z: torch.Tensor,
@@ -51,17 +57,17 @@ def rdg_step(
 
     # step 3: dual update
     y_new = y + rho * (alphak * grad_u + (1 - alphak) * z - z_new)
-    div_y_new = sp.matmul(div, y_new.flatten())
+    # div_y_new = sp.matmul(div, y_new.flatten())
 
     tri_areas_sqrt_grad_u = tri_areas_sqrt[None, :] * grad_u
     tri_areas_sqrt_z_new = tri_areas_sqrt[None, :] * z_new
     r_norm = torch.linalg.norm(tri_areas_sqrt_grad_u - tri_areas_sqrt_z_new, ord="fro")
     s_norm = rho * torch.linalg.norm((div_z - div_z_new)[:, None], ord="fro")
 
-    thresh1 = (
-        sqrt(3 * tri_areas_sqrt.shape[0]) * 5e-6 * torch.sqrt(torch.sum(vert_areas))
-    )
-    thresh2 = sqrt(vert_areas.shape[0]) * 5e-6 * (torch.sum(vert_areas))
+    # thresh1 = (
+    #     sqrt(3 * tri_areas_sqrt.shape[0]) * 5e-6 * torch.sqrt(torch.sum(vert_areas))
+    # )
+    # thresh2 = sqrt(vert_areas.shape[0]) * 5e-6 * (torch.sum(vert_areas))
 
     # eps_pri = thresh1 + 1e-2 * torch.maximum(
     #     torch.linalg.norm(tri_areas_sqrt_grad_u, "fro"),
@@ -81,6 +87,7 @@ def rdg_step(
     return y_new, z_new, u, rho
 
 
+@profile_fn(name="rdg_solve")
 def rdg_solve(
     verts: torch.Tensor,
     faces: torch.Tensor,
@@ -97,8 +104,7 @@ def rdg_solve(
 
     tri_areas = triangle_areas(face_index(verts, faces))
     vert_areas = reduce_on_subface(tri_areas / 3, faces, n_vertices, "sum")
-    g_x, g_y, g_z = grad(verts, faces)
-    g = sp.cat([g_x, g_y, g_z], 0)
+    g: torch.Tensor = grad(verts, faces, stack=True)  # type: ignore
     lap, _ = laplacian(verts, faces)
 
     alpha = alpha_hat * torch.sqrt(torch.sum(vert_areas))
@@ -107,9 +113,12 @@ def rdg_solve(
     unknown_idx = sp.index_complement(n_vertices, bc_idx)
     vert_areas_unknown = vert_areas[unknown_idx]
     g_unknown = sp.get_slice(g, None, unknown_idx)
-    lap_unknown = sp.get_slice(sp.get_slice(lap, unknown_idx, None), None, unknown_idx)
-    div_unknown = sp.mul(torch.cat(3 * [tri_areas])[None, :], g_unknown.mT.coalesce())
-    chol = _linear_solver_fn(lap_unknown)
+    lap_unknown = sp.get_slice(lap, unknown_idx, unknown_idx)
+    div_unknown = grad_to_div(g_unknown, tri_areas)
+    g_unknown = g_unknown.to_sparse_csr()
+    div_unknown = div_unknown.to_sparse_csr()
+    # chol = default_solver(lap_unknown)
+    chol = CholmodSolver(lap_unknown)
 
     solver = make_solver_layer(
         partial(rdg_step, alphak=alphak, lap_solver=chol),
@@ -177,7 +186,7 @@ class Verts(torch.nn.Module):
 
 def main(mesh_path):
     dtype = torch.double
-    device = "cpu"
+    device = "cuda"
     mesh, _ = Mesh.from_path(mesh_path, dtype=dtype, device=device)
     # mesh.geom.normalize()
     faces, verts = mesh.topo.faces, mesh.geom.vertices.to(torch.float64)
@@ -239,14 +248,7 @@ def main(mesh_path):
         bc_idx = torch.tensor([start], device=device, dtype=torch.int64)
         start_dist_init = rdg_solve(terrain(), faces, bc_idx)
 
-        # bc_idx = torch.tensor([end], device=device, dtype=torch.int64)
-        # end_dist_init = rdg_solve(terrain(), faces, bc_idx)
-
-    # optimizer.zero_grad()
-    # bc_idx = torch.tensor([start], device=device, dtype=torch.int64)
-    # dist = rdg_solve(terrain(), faces, bc_idx)
-    # loss = ((dist[centerline] - target_dist) ** 2).sum()
-    # loss.backward()
+    global_profiler.dump()
 
     try:
         import polyscope as ps
@@ -254,29 +256,31 @@ def main(mesh_path):
         ps.init()
         ps.set_ground_plane_mode("shadow_only")
         ps_mesh = ps.register_surface_mesh(
-            "mesh", terrain().detach().numpy(), faces.numpy(), enabled=True
+            "mesh", terrain().detach().cpu().numpy(), faces.cpu().numpy(), enabled=True
         )
         ps_mesh.add_scalar_quantity(
             "dist",
-            start_dist_init.detach().numpy(),
+            start_dist_init.detach().cpu().numpy(),
             isolines_enabled=True,
             defined_on="vertices",
             enabled=True,
         )
         ps_verts = ps.register_point_cloud(
-            "verts", terrain().detach().numpy(), enabled=True, radius=0.001
+            "verts", terrain().detach().cpu().numpy(), enabled=True, radius=0.001
         )
         # ps_verts.add_vector_quantity(
         #     "grad", verts.grad.numpy(), enabled=True, length=0.15
         # )
         ps.register_point_cloud(
-            "bc", verts[start : start + 1].detach().numpy(), enabled=True
+            "bc", verts[start : start + 1].detach().cpu().numpy(), enabled=True
         )
         is_optimizing = False
         iteration = 0
         sobolev_factor = 20.0
         smoothing = 0.25
-        max_iter = 250
+        max_iter = 2
+
+        solver = None
 
         def callback():
             nonlocal \
@@ -285,7 +289,8 @@ def main(mesh_path):
                 is_optimizing, \
                 iteration, \
                 sobolev_factor, \
-                smoothing
+                smoothing, \
+                solver
             _, sobolev_factor = ps.imgui.SliderFloat(
                 "Curr Frame", sobolev_factor, 0, 100
             )
@@ -295,6 +300,7 @@ def main(mesh_path):
                 print(f"Optimizing, iteration {iteration}.")
                 iteration += 1
                 if iteration > max_iter:
+                    global_profiler.dump()
                     ps.unshow()
                     return
                 if iteration % 250 == 0:
@@ -304,9 +310,9 @@ def main(mesh_path):
                     optimizer.zero_grad()
                     bc_idx = torch.tensor([start], device=device, dtype=torch.int64)
                     dist = rdg_solve(terrain(), faces, bc_idx)
-                    lap, mass = laplacian(terrain(), faces)
                     dist_loss = ((dist[centerline] - target_dist) ** 2).sum()
-                    smooth_loss = terrain.z.mT @ lap @ terrain.z
+                    lap, mass = laplacian(terrain(), faces)
+                    smooth_loss = sp.matmul(terrain.z.mT, sp.matmul(lap, terrain.z))
                     nonneg_loss = torch.relu(-torch.log(terrain.z + 1)).sum()
                     loss = dist_loss + smoothing * smooth_loss + 0.1 * nonneg_loss
                     print(
@@ -323,13 +329,15 @@ def main(mesh_path):
                     print(f"Backward took: {time_end - time_start}s.")
 
                     with torch.no_grad():
+                        mat = mass + sobolev_factor * lap
                         assert terrain.z.grad is not None
-                        z_grad = min_quadratic_energy(
-                            mass + sobolev_factor * lap,
-                            mass @ terrain.z.grad,
-                            torch.tensor([[start]], device=device),
+                        solver, z_grad = min_quadratic_energy(
+                            mat,
+                            sp.matmul(mass, terrain.z.grad),
+                            torch.tensor([start], device=device),
                             torch.tensor([[0.0]], dtype=dtype, device=device),
-                        )[1]
+                            solver=solver,
+                        )
 
                         new_lr = lr
                         max_z_grad = z_grad.abs().max()
@@ -343,18 +351,18 @@ def main(mesh_path):
                         terrain.z.grad = z_grad
                     optimizer.step()
 
-                ps_mesh.update_vertex_positions(terrain().detach().numpy())
-                ps_verts.update_point_positions(terrain().detach().numpy())
+                ps_mesh.update_vertex_positions(terrain().detach().cpu().numpy())
+                ps_verts.update_point_positions(terrain().detach().cpu().numpy())
                 ps_mesh.add_scalar_quantity(
                     "dist",
-                    dist.detach().numpy(),
+                    dist.detach().cpu().numpy(),
                     isolines_enabled=True,
                     defined_on="vertices",
                     enabled=True,
                 )
                 ps_mesh.add_scalar_quantity(
                     "-grad dist",
-                    -z_grad.flatten().detach().numpy(),
+                    -z_grad.flatten().detach().cpu().numpy(),
                     isolines_enabled=True,
                     defined_on="vertices",
                     enabled=False,
@@ -363,8 +371,8 @@ def main(mesh_path):
 
                 igl.write_triangle_mesh(
                     f"results/terrain_smooth={smoothing}.obj",
-                    terrain().detach().cpu().numpy(),
-                    mesh.faces.cpu().numpy(),
+                    terrain().detach().cpu().cpu().numpy(),
+                    mesh.faces.cpu().cpu().numpy(),
                 )
 
         ps.set_user_callback(callback)
@@ -378,7 +386,6 @@ def main(mesh_path):
 
 if __name__ == "__main__":
     print(f"Default num_threads: {torch.get_num_threads()}")
-    torch.set_num_threads(16)
     torch.set_printoptions(linewidth=200, sci_mode=False, precision=6)
 
     parser = ArgumentParser(description="Demonstrates ARAP.")

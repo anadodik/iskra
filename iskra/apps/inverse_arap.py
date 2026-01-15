@@ -215,7 +215,7 @@ def main(
     lap = laplacian_from_weights(weights, faces)
     unknown_idx = sp.index_complement(mesh.n_vertices, handle_idx)
     lap_uk = spla.quad_energy_mat(lap, unknown_idx)
-    lap_factors = spla._linear_solver_fn(lap_uk)
+    lap_factors = spla.default_solver(lap_uk)
 
     handles = verts[handle_idx]
     handles = handles.requires_grad_(True)
