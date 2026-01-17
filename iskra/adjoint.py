@@ -6,7 +6,13 @@ from typing import Any, Callable, Literal, Sequence, cast
 import torch
 
 from iskra.profiling import profile_block, profile_fn
-from iskra.sparse_linalg import gmres_solve
+from iskra.sparse_linalg import (
+    build_diagonal_preconditioner,
+    build_sampled_diagonal_preconditioner,
+    cg_solve,
+    estimate_spectral_radius,
+    gmres_solve,
+)
 
 
 def make_vjp[T, **P](
@@ -82,7 +88,11 @@ def make_solver_layer[T, **P](
     fwd_method: Literal["fixed-point"] | Callable[P, T] = "fixed-point",
     fwd_max_iter: int = 90,
     fwd_eps: float = 1e-10,
+    fwd_error_arg: int | None = None,
+    fwd_error_tol: float | None = None,
     bwd_method: Literal["gmres"] = "gmres",
+    gmres_init: torch.Tensor | None = None,
+    callback_gmres_sol: Callable | None = None,
     bwd_max_iter: int = 200,
     bwd_eps: float = 1e-12,
     verbose: bool = False,
@@ -93,6 +103,11 @@ def make_solver_layer[T, **P](
 
     if not isinstance(argnums, Sequence):
         argnums = (argnums,)
+
+    if fwd_error_tol is not None and fwd_error_arg is None:
+        raise ValueError(
+            "Must specify which function output is the error, please set fwd_error_arg."
+        )
 
     class SolverFn(torch.autograd.Function):
         @staticmethod
@@ -139,9 +154,18 @@ def make_solver_layer[T, **P](
                         args_list[iterate[0]] = outputs_tuple[iterate[1]]
                     if difference < fwd_eps:
                         break
+                    if fwd_error_arg is not None:
+                        if (outputs_tuple[fwd_error_arg] < fwd_error_tol).all():
+                            break
                     if verbose:
-                        print("Error (forward): ", difference.cpu().detach().item())
-            print("Final error (forward): ", difference.cpu().detach().item())
+                        print(
+                            "Iterate difference (forward): ",
+                            difference.cpu().detach().item(),
+                        )
+            if verbose:
+                print(
+                    "Iterate difference (forward): ", difference.cpu().detach().item()
+                )
             return outputs
 
         @staticmethod
@@ -162,19 +186,44 @@ def make_solver_layer[T, **P](
             for iterate in iterates:
                 inputs[iterate[0]] = outputs[iterate[1]]
             vjp_iterate, vjp_params = make_vjp(fn, iterates, argnums, *inputs)
-            init = torch.randn_like(grad_iterate)
+            init = gmres_init
+            if init is None:
+                init = torch.zeros_like(grad_iterate)
 
             with profile_block("bwd_optim"):
+                system_fn = lambda z: torch.cat(  # noqa: E731
+                    [grad.flatten() for grad in vjp_iterate(z)]
+                )
+                # spectral = estimate_spectral_radius(system_fn, init, 1000)
+                # print(f"Spectral radius: {spectral}")
+                preconditioner = None
+                # preconditioner = build_sampled_diagonal_preconditioner(
+                #     system_fn, init.shape, init.device, init.dtype
+                # )
+
+                # def preconditioner(v):
+                #     return (v.flatten() * torch.ones_like(init)).reshape(init.shape)
+
                 if bwd_method == "gmres":
                     dl_df = -gmres_solve(
-                        lambda z: torch.cat(
-                            [grad.flatten() for grad in vjp_iterate(z)]
-                        ),
+                        system_fn,
                         grad_iterate,
                         init,
                         maxiter=bwd_max_iter,
                         tol=bwd_eps,
+                        preconditioner=preconditioner,
                     )
+                    if callback_gmres_sol is not None:
+                        callback_gmres_sol(-dl_df)
+                    # dl_df = -cg_solve(
+                    #     lambda z: torch.cat(
+                    #         [grad.flatten() for grad in vjp_iterate(z)]
+                    #     ),
+                    #     grad_iterate,
+                    #     init,
+                    #     maxiter=bwd_max_iter,
+                    #     tol=bwd_eps,
+                    # )
                 else:
                     raise ValueError(f"Unrecognized backwards solver {bwd_method}")
 
@@ -185,7 +234,8 @@ def make_solver_layer[T, **P](
                     - torch.cat([grad.flatten() for grad in vjp_iterate(-dl_df)])
                 ).flatten()
             )
-            print(f"Final error (backward): {gmres_error.item()}")
+            if verbose:
+                print(f"Iterate difference (backward): {gmres_error.item()}")
 
             with profile_block("bwd_inputs"):
                 grad_param = vjp_params(dl_df)

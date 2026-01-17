@@ -94,7 +94,7 @@ def rdg_solve(
     bc_idx: torch.Tensor,
     alpha_hat: float = 0.05,
     alphak: float = 1.7,
-    fwd_max_iter: int = 2_000,
+    fwd_max_iter: int = 150,
     bwd_max_iter: int = 600,
 ) -> torch.Tensor:
     n_vertices = verts.shape[0]
@@ -117,7 +117,6 @@ def rdg_solve(
     div_unknown = grad_to_div(g_unknown, tri_areas)
     g_unknown = g_unknown.to_sparse_csr()
     div_unknown = div_unknown.to_sparse_csr()
-    # chol = default_solver(lap_unknown)
     chol = CholmodSolver(lap_unknown)
 
     solver = make_solver_layer(
@@ -129,7 +128,7 @@ def rdg_solve(
         fwd_eps=1e-12,
         bwd_method="gmres",
         bwd_max_iter=bwd_max_iter,
-        bwd_eps=1e-12,
+        bwd_eps=1e-6,
     )
 
     u_unknown = torch.zeros([unknown_idx.shape[0]], device=device, dtype=dtype)
@@ -278,7 +277,7 @@ def main(mesh_path):
         iteration = 0
         sobolev_factor = 20.0
         smoothing = 0.25
-        max_iter = 2
+        max_iter = 200
 
         solver = None
 

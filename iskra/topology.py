@@ -217,7 +217,7 @@ def vertex_adjacency(faces: torch.Tensor) -> torch.Tensor:
     return idx
 
 
-def vertex_adjacency_index_edge(values: torch.Tensor) -> torch.Tensor:
+def edge_to_vertex_adjacency(values: torch.Tensor) -> torch.Tensor:
     return torch.cat([values, values], -1)
 
 

@@ -426,8 +426,216 @@ def gmres_solve(
     init: torch.Tensor,
     maxiter: int,
     tol: float,
+    preconditioner: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> torch.Tensor:
-    """Matrix-free GMRES solver for (I - J^T) u = b.
+    """Optimized matrix-free GMRES solver for (I - J^T) u = b.
+
+    Arguments:
+        f (Callable[[torch.Tensor], torch.Tensor]): Computes J^T @ z  (vector-Jacobian product)
+        b (torch.Tensor): Right-hand side of linear system, same shape as u.
+        init (torch.Tensor): Initial guess for u.
+        maxiter (int): Maximum number of iterations for the solver.
+        tol (float): Minimum tolerance the solver needs to reach before exiting.
+        preconditioner (Optional[Callable]): Applies M^{-1} to a vector. If None, no preconditioning.
+
+    Returns:
+        (torch.Tensor): Solution to the linear system (I - J^T) u = b.
+    """
+    shape = b.shape
+    device, dtype = b.device, b.dtype
+    dim = b.numel()
+
+    b_flat = b.flatten()
+    init_flat = init.flatten()
+
+    res = b_flat - f(init).flatten()
+    if preconditioner is not None:
+        res = preconditioner(res.reshape(shape)).flatten()
+
+    res_norm = torch.norm(res)
+    if res_norm < tol:
+        return init
+
+    krylov_basis = torch.zeros((dim, maxiter + 1), dtype=dtype, device=device)
+    krylov_basis[:, 0] = res / res_norm
+
+    hessenberg = torch.zeros((maxiter + 1, maxiter), dtype=dtype, device=device)
+
+    cos_vals = torch.zeros(maxiter, dtype=dtype, device=device)
+    sin_vals = torch.zeros(maxiter, dtype=dtype, device=device)
+
+    g = torch.zeros(maxiter + 1, dtype=dtype, device=device)
+    g[0] = res_norm
+
+    k = 0
+    for k in range(maxiter):
+        q_k = krylov_basis[:, k].reshape(shape)
+        w = f(q_k).flatten()
+
+        if preconditioner is not None:
+            w = preconditioner(w.reshape(shape)).flatten()
+
+        hessenberg[: k + 1, k] = krylov_basis[:, : k + 1].T @ w
+        w = w - krylov_basis[:, : k + 1] @ hessenberg[: k + 1, k]
+
+        hessenberg[k + 1, k] = torch.norm(w)
+        if hessenberg[k + 1, k] > 1e-12:
+            krylov_basis[:, k + 1] = w / hessenberg[k + 1, k]
+        else:
+            break
+
+        for i in range(k):
+            temp = cos_vals[i] * hessenberg[i, k] + sin_vals[i] * hessenberg[i + 1, k]
+            hessenberg[i + 1, k] = (
+                -sin_vals[i] * hessenberg[i, k] + cos_vals[i] * hessenberg[i + 1, k]
+            )
+            hessenberg[i, k] = temp
+
+        h_k = hessenberg[k, k]
+        h_k1 = hessenberg[k + 1, k]
+        rho = torch.sqrt(h_k**2 + h_k1**2)
+        cos_vals[k] = h_k / rho
+        sin_vals[k] = h_k1 / rho
+
+        hessenberg[k, k] = rho
+        hessenberg[k + 1, k] = 0.0
+
+        g[k + 1] = -sin_vals[k] * g[k]
+        g[k] = cos_vals[k] * g[k]
+
+        res = abs(g[k + 1])
+        if res < tol:
+            break
+
+    print(f"GMRES exiting after {k + 1} iterations, residual: {res:.6e}")
+
+    y = torch.zeros(k + 1, dtype=dtype, device=device)
+    for i in range(k, -1, -1):
+        y[i] = (g[i] - hessenberg[i, i + 1 : k + 1] @ y[i + 1 : k + 1]) / hessenberg[
+            i, i
+        ]
+
+    correction = krylov_basis[:, : k + 1] @ y
+    if preconditioner is not None:
+        correction = preconditioner(correction.reshape(shape)).flatten()
+
+    x_flat = init_flat + correction
+    return x_flat.reshape(shape)
+
+
+def build_diagonal_preconditioner(f, shape, device, dtype):
+    diag = torch.zeros(shape.numel(), device=device, dtype=dtype)
+    e_i = torch.zeros(shape.numel(), device=device, dtype=dtype)
+    for i in range(shape.numel()):
+        e_i[i] = 1.0
+        e_i_shaped = e_i.reshape(shape)
+        diag[i] = 1 - f(e_i_shaped).flatten()[i]
+        e_i[i] = 0.0
+
+    diag_inv = 1.0 / (diag + 1e-8)
+
+    def preconditioner(v):
+        return (v.flatten() * diag_inv).reshape(shape)
+
+    return preconditioner
+
+
+def build_sampled_diagonal_preconditioner(f, shape, device, dtype, n_samples=500):
+    dim = shape.numel()
+    indices = torch.randperm(dim, device=device)[:n_samples]
+
+    diag_samples = torch.zeros(n_samples, device=device, dtype=dtype)
+    e_i = torch.zeros(dim, device=device, dtype=dtype)
+    for idx, i in enumerate(indices):
+        e_i[i] = 1.0
+        diag_samples[idx] = f(e_i.reshape(shape)).flatten()[i]
+        e_i[i] = 0.0
+
+    scale = 1.0 / (diag_samples.mean() + 1e-8)
+
+    def preconditioner(v):
+        return v * scale
+
+    return preconditioner
+
+
+# def gmres_solve(
+#     f: Callable[[torch.Tensor], torch.Tensor],
+#     b: torch.Tensor,
+#     init: torch.Tensor,
+#     maxiter: int,
+#     tol: float,
+# ) -> torch.Tensor:
+#     """Matrix-free GMRES solver for (I - J^T) u = b.
+
+#     Arguments:
+#         f (Callable[[torch.Tensor], torch.Tensor]): Computes J^T @ z  (vector-Jacobian product)
+#         b (torch.Tensor): Right-hand side of linear system, same shape as u.
+#         init (torch.Tensor): Initial guess for u.
+#         maxiter (int): Maximum number of iterations for the solver.
+#         tol (float): Minimum tolerance the solver needs to reach before exiting.
+
+#     Returns:
+#         (torch.Tensor): Solution to the linear system (I - J^T) u = b.
+#     """
+#     shape = b.shape
+#     device, dtype = b.device, b.dtype
+
+#     res = b.flatten() - f(init).flatten()
+#     res_norm = torch.norm(res)
+#     if res_norm < tol:
+#         return init
+
+#     # Krylov basis and Hessenberg matrix
+#     krylov_basis = [res / res_norm]
+#     hessenberg = torch.zeros((maxiter + 1, maxiter), dtype=dtype, device=device)
+#     g = torch.zeros((maxiter + 1,), dtype=dtype, device=device)
+#     g[0] = res_norm
+
+#     for k in range(maxiter):
+#         q_k = krylov_basis[k].reshape(shape)
+#         # Compute (I - J^T) z:
+#         w = f(q_k).flatten()
+
+#         # Modified Gram-Schmidt orthogonalization:
+#         for i in range(k + 1):
+#             hessenberg[i, k] = torch.dot(krylov_basis[i], w)
+#             w -= hessenberg[i, k] * krylov_basis[i]
+
+#         hessenberg[k + 1, k] = torch.norm(w)
+#         if hessenberg[k + 1, k] > 0:
+#             krylov_basis.append(w / hessenberg[k + 1, k])
+#         else:
+#             break
+
+#         # Least-squares solve min ||beta e1 - H y||
+#         hessenberg_k = hessenberg[: k + 2, : k + 1]
+#         g_k = g[: k + 2]
+#         with profile_block("lstsq"):
+#             y, *_ = torch.linalg.lstsq(hessenberg_k, g_k.unsqueeze(1))
+#         y = y.squeeze(1)
+
+#         res = torch.norm(g_k - hessenberg_k @ y)
+#         if res < tol:
+#             break
+#     print(f"GMRES exiting after {k} iterations, residual: {res}.")
+
+
+#     basis_mat = torch.stack(krylov_basis[: k + 1], dim=1)  # [dim, k + 1]
+#     y, *_ = torch.linalg.lstsq(hessenberg[: k + 2, : k + 1], g[: k + 2].unsqueeze(1))
+#     x_flat = init.flatten() + basis_mat @ y.squeeze(1)
+#     # res = torch.norm(b.flatten() - f(x_flat.reshape(shape)).flatten())
+#     return x_flat.reshape(shape)
+
+
+def cg_solve(
+    f: Callable[[torch.Tensor], torch.Tensor],
+    b: torch.Tensor,
+    init: torch.Tensor,
+    maxiter: int,
+    tol: float,
+) -> torch.Tensor:
+    """Matrix-free Conjugate Gradient solver for (I - J^T) u = b.
 
     Arguments:
         f (Callable[[torch.Tensor], torch.Tensor]): Computes J^T @ z  (vector-Jacobian product)
@@ -440,51 +648,41 @@ def gmres_solve(
         (torch.Tensor): Solution to the linear system (I - J^T) u = b.
     """
     shape = b.shape
-    device, dtype = b.device, b.dtype
 
-    res = b.flatten() - f(init).flatten()
-    res_norm = torch.norm(res)
-    if res_norm < tol:
-        return init
+    x = init.clone()
+    r = b - f(x)
+    r_flat = r.flatten()
 
-    # Krylov basis and Hessenberg matrix
-    krylov_basis = [res / res_norm]
-    hessenberg = torch.zeros((maxiter + 1, maxiter), dtype=dtype, device=device)
-    g = torch.zeros((maxiter + 1,), dtype=dtype, device=device)
-    g[0] = res_norm
+    rsold = torch.dot(r_flat, r_flat)
+    if torch.sqrt(rsold) < tol:
+        return x
+
+    p = r.clone()
 
     for k in range(maxiter):
-        q_k = krylov_basis[k].reshape(shape)
-        # Compute (I - J^T) z:
-        w = f(q_k).flatten()
+        Ap = f(p)
+        Ap_flat = Ap.flatten()
+        p_flat = p.flatten()
 
-        # Modified Gram-Schmidt orthogonalization:
-        for i in range(k + 1):
-            hessenberg[i, k] = torch.dot(krylov_basis[i], w)
-            w -= hessenberg[i, k] * krylov_basis[i]
+        alpha = rsold / torch.dot(p_flat, Ap_flat)
+        x = x + alpha * p
+        r = r - alpha * Ap
+        r_flat = r.flatten()
 
-        hessenberg[k + 1, k] = torch.norm(w)
-        if hessenberg[k + 1, k] > 0:
-            krylov_basis.append(w / hessenberg[k + 1, k])
-        else:
-            break
+        rsnew = torch.dot(r_flat, r_flat)
+        res = torch.sqrt(rsnew)
 
-        # Least-squares solve min ||beta e1 - H y||
-        hessenberg_k = hessenberg[: k + 2, : k + 1]
-        g_k = g[: k + 2]
-        y, *_ = torch.linalg.lstsq(hessenberg_k, g_k.unsqueeze(1))
-        y = y.squeeze(1)
-
-        res = torch.norm(g_k - hessenberg_k @ y)
         if res < tol:
-            break
-    print(f"GMRES exiting after {k} iterations, residual: {res}.")
+            print(f"CG exiting after {k + 1} iterations, residual: {res:.6e}")
+            return x
 
-    basis_mat = torch.stack(krylov_basis[: k + 1], dim=1)  # [dim, k + 1]
-    y, *_ = torch.linalg.lstsq(hessenberg[: k + 2, : k + 1], g[: k + 2].unsqueeze(1))
-    x_flat = init.flatten() + basis_mat @ y.squeeze(1)
-    # res = torch.norm(b.flatten() - f(x_flat.reshape(shape)).flatten())
-    return x_flat.reshape(shape)
+        beta = rsnew / rsold
+        p = r + beta * p
+        rsold = rsnew
+
+    res = torch.sqrt(rsold)
+    print(f"CG exiting after {maxiter} iterations, residual: {res:.6e}")
+    return x
 
 
 def estimate_spectral_radius(

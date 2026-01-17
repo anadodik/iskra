@@ -21,11 +21,11 @@ from iskra.profiling import global_profiler, profile_block, profile_fn
 from iskra.signed_svd import closest_rot_3x3, polar_3x3, signed_svd
 from iskra.topology import (
     boundary,
+    edge_to_vertex_adjacency,
     face_index,
     get_subfaces,
     reduce_on_subface,
     vertex_adjacency,
-    vertex_adjacency_index_edge,
 )
 
 
@@ -211,7 +211,7 @@ def main(
 
     vert_vert = vertex_adjacency(faces)
     weights = cotan_weights(verts, faces, clamp_min=1e-5)
-    vert_vert_weights = vertex_adjacency_index_edge(weights)
+    vert_vert_weights = edge_to_vertex_adjacency(weights)
     lap = laplacian_from_weights(weights, faces)
     unknown_idx = sp.index_complement(mesh.n_vertices, handle_idx)
     lap_uk = spla.quad_energy_mat(lap, unknown_idx)
