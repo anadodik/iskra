@@ -189,6 +189,7 @@ def make_solver_layer[T, **P](
             init = gmres_init
             if init is None:
                 init = torch.zeros_like(grad_iterate)
+                # init = torch.randn_like(grad_iterate)
 
             with profile_block("bwd_optim"):
                 system_fn = lambda z: torch.cat(  # noqa: E731
@@ -212,6 +213,7 @@ def make_solver_layer[T, **P](
                         maxiter=bwd_max_iter,
                         tol=bwd_eps,
                         preconditioner=preconditioner,
+                        # verbose=verbose,
                     )
                     if callback_gmres_sol is not None:
                         callback_gmres_sol(-dl_df)

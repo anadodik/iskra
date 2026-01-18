@@ -198,7 +198,6 @@ def main(
     dtype_name: str,
 ):
     torch.set_num_threads(16)
-    torch.autograd.detect_anomaly(True)
     device = torch.device(device_name)
     dtype = getattr(torch, dtype_name)
 

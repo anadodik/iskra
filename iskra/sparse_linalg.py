@@ -453,8 +453,8 @@ def gmres_solve(
         res = preconditioner(res.reshape(shape)).flatten()
 
     res_norm = torch.norm(res)
-    if res_norm < tol:
-        return init
+    # if res_norm < tol:
+    #     return init
 
     krylov_basis = torch.zeros((dim, maxiter + 1), dtype=dtype, device=device)
     krylov_basis[:, 0] = res / res_norm
