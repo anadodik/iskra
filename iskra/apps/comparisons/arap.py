@@ -1,6 +1,10 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+import gc
 import json
+import os
+import platform
+import resource
 import time
 from argparse import ArgumentParser
 from functools import partial
@@ -9,11 +13,14 @@ from typing import Any, Callable, Literal, cast
 
 import igl
 import numpy as np
+import psutil
 import torch
 
 # torch.set_num_threads(32)
 # torch.set_num_interop_threads(32)
 torch.set_printoptions(linewidth=200, sci_mode=False)
+
+import theseus as th
 
 import iskra.sparse as sp
 import iskra.sparse_linalg as spla
@@ -116,6 +123,139 @@ def arap_step(
 #     return verts_deformed, vert_energy
 
 
+def build_arap_layer(
+    verts_rest: torch.Tensor,  # (N,3)
+    edges: torch.Tensor,  # (E,2) each row [i,j]
+    constraint_type: torch.Tensor,  # (N,) 0 free, 1 displaced, 2 fixed
+    handle_offsets: torch.Tensor,  # (N,3)target offset for type==1, ignored otherwise
+    w_fit_sqrt: float = 3.0**0.5,
+    w_reg_sqrt: float = 12.0**0.5,
+    w_rot_sqrt: float = 5.0**0.5,
+    max_iters: int = 20,
+):
+    device = verts_rest.device
+    dtype = verts_rest.dtype
+
+    n_verts = verts_rest.shape[0]
+    n_edges = edges.shape[0]
+    i0 = edges[:, 0]
+    i1 = edges[:, 1]
+
+    vert_offset_init = torch.zeros((1, 3 * n_verts), device=device, dtype=dtype)
+    rot_init = torch.eye(3, device=device, dtype=dtype)[None, None, ...]
+    rot_init = rot_init.expand(-1, n_verts, -1, -1)
+
+    vert_offset = th.Vector(tensor=vert_offset_init, name="vert_offset")  # # opt var
+    rot = th.Vector(tensor=rot_init.reshape(1, 9 * n_verts), name="rot")  # opt var
+    verts_rest_var = th.Variable(verts_rest.reshape(1, 3 * n_verts), name="verts_rest")
+    handle_offsets_var = th.Variable(
+        handle_offsets.reshape(1, 3 * n_verts), name="handle_offsets"
+    )
+    constraint_type_var = th.Variable(
+        constraint_type.reshape(1, n_verts), name="constraint_type"
+    )
+
+    w_fit = th.ScaleCostWeight(
+        torch.tensor(float(w_fit_sqrt), device=device, dtype=dtype)
+    )
+    w_reg = th.ScaleCostWeight(
+        torch.tensor(float(w_reg_sqrt), device=device, dtype=dtype)
+    )
+    w_rot = th.ScaleCostWeight(
+        torch.tensor(float(w_rot_sqrt), device=device, dtype=dtype)
+    )
+
+    def fit_err(optim_vars, aux_vars):
+        (vert_offset_var,) = optim_vars
+        (C_v, constraint_type_var) = aux_vars
+
+        off = vert_offset_var.tensor.view(1, n_verts, 3)
+        c = C_v.tensor.view(1, n_verts, 3)
+        ctype = constraint_type_var.tensor.view(1, n_verts)
+
+        m_disp = (ctype == 1).unsqueeze(-1)
+        m_fix = (ctype == 2).unsqueeze(-1)
+
+        r = torch.zeros_like(off)
+        r = torch.where(m_fix, off, r)
+        r = torch.where(m_disp, off - c, r)
+
+        return r.reshape(1, 3 * n_verts)
+
+    def rot_err(optim_vars, aux_vars):
+        (rot_var,) = optim_vars
+        rot = rot_var.tensor.view(1, n_verts, 3, 3)
+
+        c0 = rot[:, :, :, 0]
+        c1 = rot[:, :, :, 1]
+        c2 = rot[:, :, :, 2]
+
+        dot01 = (c0 * c1).sum(dim=-1)
+        dot02 = (c0 * c2).sum(dim=-1)
+        dot12 = (c1 * c2).sum(dim=-1)
+        n0 = (c0 * c0).sum(dim=-1) - 1.0
+        n1 = (c1 * c1).sum(dim=-1) - 1.0
+        n2 = (c2 * c2).sum(dim=-1) - 1.0
+
+        r = torch.stack([dot01, dot02, dot12, n0, n1, n2], dim=-1)  # (1,N,6)
+        return r.reshape(1, 6 * n_verts)
+
+    def reg_err(optim_vars, aux_vars):
+        (vert_offset_var, rot_var) = optim_vars
+        (verts_rest_var,) = aux_vars
+
+        off = vert_offset_var.tensor.view(1, n_verts, 3)
+        rot = rot_var.tensor.view(1, n_verts, 3, 3)
+        u = verts_rest_var.tensor.view(1, n_verts, 3)
+
+        i0b = i0  # (E,)
+        i1b = i1  # (E,)
+
+        du = (u[:, i1b, :] - u[:, i0b, :]).unsqueeze(-1)  # (1,E,3,1)
+        rdu = torch.matmul(rot[:, i0b, :, :], du).squeeze(-1)  # (1,E,3)
+
+        x1 = u[:, i1b, :] + off[:, i1b, :]
+        x0 = u[:, i0b, :] + off[:, i0b, :]
+
+        r = (x1 - x0) - rdu
+        return r.reshape(1, 3 * n_edges)
+
+    objective = th.Objective(dtype=dtype).to(device=device)
+
+    objective.add(
+        th.AutoDiffCostFunction(
+            optim_vars=[vert_offset],
+            err_fn=fit_err,
+            dim=3 * n_verts,
+            aux_vars=[handle_offsets_var, constraint_type_var],
+            cost_weight=w_fit,
+        )
+    )
+    objective.add(
+        th.AutoDiffCostFunction(
+            optim_vars=[rot],
+            err_fn=rot_err,
+            dim=6 * n_verts,
+            aux_vars=[],
+            cost_weight=w_rot,
+        )
+    )
+    objective.add(
+        th.AutoDiffCostFunction(
+            optim_vars=[vert_offset, rot],
+            err_fn=reg_err,
+            dim=3 * n_edges,
+            aux_vars=[verts_rest_var],
+            cost_weight=w_reg,
+        )
+    )
+    optimizer = th.LevenbergMarquardt(
+        objective, max_iterations=max_iters, step_size=2.0
+    )
+    layer = th.TheseusLayer(optimizer)
+    return layer
+
+
 @profile_fn
 def arap_solve(
     verts: torch.Tensor,
@@ -165,6 +305,8 @@ def main(
     results_dir = Path.home() / "Dropbox" / "Results" / "iskra" / "arap_2"
     results_dir = results_dir / mesh_path.stem / f"{method}_{device_name}_{dtype_name}"
 
+    torch.cuda.reset_peak_memory_stats()
+
     # Load meshes
     mesh, _ = Mesh.from_path(mesh_path, dtype=dtype, device=device)
     faces, verts = mesh.topo.faces, mesh.geom.vertices
@@ -181,7 +323,7 @@ def main(
             dtype=torch.int64,
         )
     handle_idx = torch.cat([bdr_idx, control_idx])
-
+    edges, _, _ = get_subfaces(faces)
     vert_vert = vertex_adjacency(faces)
     weights = cotan_weights(verts, faces, clamp_min=1e-5)
     vert_vert_weights = edge_to_vertex_adjacency(weights)
@@ -190,31 +332,30 @@ def main(
     lap_uk = spla.quad_energy_mat(lap, unknown_idx)
     lap_factors = spla.default_solver(lap_uk)
 
-    handles = verts[handle_idx]
-    handles = handles.requires_grad_(True)
-    optimizer = torch.optim.SGD([handles], lr=lr)
+    handles = verts[handle_idx].clone()
 
-    print("Computing igl ARAP.")
-    arap_data_igl = igl.ARAPData()
-    arap_data_igl.energy = igl.ARAPEnergyType.ARAP_ENERGY_TYPE_SPOKES
-    arap_data_igl.max_iter = args.arap_steps
-    with profile_block("igl_arap_precomp"):
-        igl.arap_precomputation(
-            verts.detach().cpu().numpy(),
-            faces.detach().cpu().numpy(),
-            3,
-            handle_idx.detach().cpu().numpy(),
-            arap_data_igl,
-        )
-    with profile_block(f"igl_arap_solve_{arap_data_igl.max_iter}_steps"):
-        arap_deformed_igl = igl.arap_solve(
-            handles.detach().cpu().numpy(),
-            arap_data_igl,
-            verts.detach().cpu().numpy(),
-        )
-    print("Done computing igl ARAP.")
+    # print("Computing igl ARAP.")
+    # arap_data_igl = igl.ARAPData()
+    # arap_data_igl.energy = igl.ARAPEnergyType.ARAP_ENERGY_TYPE_SPOKES
+    # arap_data_igl.max_iter = args.arap_steps
+    # with profile_block("igl_arap_precomp"):
+    #     igl.arap_precomputation(
+    #         verts.detach().cpu().numpy(),
+    #         faces.detach().cpu().numpy(),
+    #         3,
+    #         handle_idx.detach().cpu().numpy(),
+    #         arap_data_igl,
+    #     )
+    # with profile_block(f"igl_arap_solve_{arap_data_igl.max_iter}_steps"):
+    #     arap_deformed_igl = igl.arap_solve(
+    #         handles.detach().cpu().numpy(),
+    #         arap_data_igl,
+    #         verts.detach().cpu().numpy(),
+    #     )
+    # print("Done computing igl ARAP.")
 
     anim_path = Path(results_dir, "animation")
+    LOGGER.warning(f"Saving animations to: {anim_path}")
     anim_path.mkdir(exist_ok=True, parents=True)
 
     # igl.writeOBJ(
@@ -222,44 +363,102 @@ def main(
     #     handles.detach().cpu().numpy(),
     #     np.empty([0, 3]),
     # )
+    if method == "theseus":
+        torch.autograd.detect_anomaly(True)
+        constraint_type = torch.zeros(
+            [verts.shape[0]], dtype=verts.dtype, device=verts.device
+        )
+        constraint_type[handle_idx] = 1
+        handle_offset = torch.zeros_like(verts)
+        handle_offset[handle_idx] = handles.detach() - verts[handle_idx]
+        th_layer = build_arap_layer(verts, edges, constraint_type, handle_offset)
+        print("Success!")
+
+    handles = handles.requires_grad_(True)
+    optimizer = torch.optim.SGD([handles], lr=lr)
 
     for step in range(max_steps):
         print(f"Step {step}")
         with profile_block("optim_step"):
             optimizer.zero_grad()
-            deformed, energy = arap_solve(
-                verts,
-                vert_vert_weights,
-                vert_vert,
-                lap,
-                handle_idx,
-                handles,
-                lap_factors,
-                max_iter=arap_steps,
-                verbose=False,
-            )
-            print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
+            with profile_block("forward"):
+                if method == "iskra":
+                    deformed, energy = arap_solve(
+                        verts,
+                        vert_vert_weights,
+                        vert_vert,
+                        lap,
+                        handle_idx,
+                        handles,
+                        lap_factors,
+                        max_iter=arap_steps,
+                        verbose=False,
+                    )
+                    print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
+                elif method == "theseus":
+                    gc.collect()
+                    handle_offset = torch.zeros_like(verts)
+                    handle_offset[handle_idx] = handles - verts[handle_idx]
+                    vert_offset_init = torch.zeros(
+                        (1, 3 * verts.shape[0]), device=device, dtype=dtype
+                    )
+                    rot_init = torch.eye(3, device=device, dtype=dtype)[None, None, ...]
+                    rot_init = rot_init.expand(-1, verts.shape[0], -1, -1)
+                    inputs = {
+                        "verts_rest": verts.flatten()[None, :].detach().clone(),
+                        "handle_offsets": handle_offset.flatten()[None, :],
+                        "constraint_type": constraint_type[None, :],
+                        "rot": rot_init.reshape(1, 9 * verts.shape[0]),
+                        "vert_offset": vert_offset_init,
+                    }
+                    outputs, _ = th_layer.forward(
+                        input_tensors=inputs,
+                        optimizer_kwargs={
+                            "track_err_history": True,
+                            "bakcward_mode": "implicit",
+                        },
+                    )
+                    deformed = verts + outputs["vert_offset"].reshape(*verts.shape)
             loss = ((deformed - target_verts) ** 2).mean()
             print(f"Loss = {loss.detach().cpu().item()}?.")
-            loss.backward()
+
+            with profile_block("backward"):
+                loss.backward()
             optimizer.step()
 
-        with torch.no_grad():
-            igl.writeOBJ(
-                str(anim_path / f"step_{step}.obj"),
-                deformed.detach().cpu().numpy(),
-                faces.cpu().numpy(),
-            )
-            print(f"Saving to: {anim_path / f'step_{step}.obj'}.")
-            igl.writeOBJ(
-                str(anim_path / f"step_handles_{step}.obj"),
-                handles.clone().detach().cpu().numpy(),
-                np.empty([0, 3]),
-            )
-    global_profiler.dump()
+            with torch.no_grad():
+                LOGGER.warning(
+                    f"Saving animations to: {anim_path / f'step_{step}.obj'}"
+                )
+                igl.writeOBJ(
+                    str(anim_path / f"step_{step}.obj"),
+                    deformed.detach().cpu().numpy(),
+                    faces.cpu().numpy(),
+                )
+                print(f"Saving to: {anim_path / f'step_{step}.obj'}.")
+                igl.writeOBJ(
+                    str(anim_path / f"step_handles_{step}.obj"),
+                    handles.clone().detach().cpu().numpy(),
+                    np.empty([0, 3]),
+                )
     with Path(results_dir, "profile.json").open("w") as f:
         f.write(json.dumps(global_profiler.summary_to_json(), indent=2))
     global_profiler.dump(path=Path(results_dir, "profile"))
+
+    peak_rss_cpu = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if platform.system().lower().startswith("linux"):
+        pass
+    elif platform.system().lower().startswith("darwin"):
+        peak_rss_cpu = peak_rss_cpu / 1024
+    peak_rss_gpu = torch.cuda.max_memory_allocated() / 1024
+
+    mem_cpu_str = f"Peak (CPU): {peak_rss_cpu} KB, {peak_rss_cpu / (1024 * 1024)} GB"
+    mem_gpu_str = f"Peak (GPU): {peak_rss_gpu} KB, {peak_rss_gpu / (1024 * 1024)} GB"
+    print(mem_cpu_str)
+    print(mem_gpu_str)
+
+    with Path(results_dir, "memory.txt").open("w") as f:
+        f.writelines([mem_cpu_str, mem_gpu_str])
 
 
 if __name__ == "__main__":
