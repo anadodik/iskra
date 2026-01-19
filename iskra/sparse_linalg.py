@@ -427,6 +427,7 @@ def gmres_solve(
     maxiter: int,
     tol: float,
     preconditioner: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    verbose: bool = False,
 ) -> torch.Tensor:
     """Optimized matrix-free GMRES solver for (I - J^T) u = b.
 
@@ -507,7 +508,8 @@ def gmres_solve(
         if res < tol:
             break
 
-    print(f"GMRES exiting after {k + 1} iterations, residual: {res:.6e}")
+    if verbose:
+        LOGGER.info(f"GMRES exiting after {k + 1} iterations, residual: {res:.6e}")
 
     y = torch.zeros(k + 1, dtype=dtype, device=device)
     for i in range(k, -1, -1):
