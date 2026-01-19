@@ -394,11 +394,11 @@ def make_power_iteration_vjp(
     return vjp_evecs, vjp_a
 
 
-start = time.perf_counter()
-make_power_iteration_vjp = torch.compile(
-    make_power_iteration_vjp, backend="inductor", dynamic=True
-)
-print("Compiling VJP took:", time.perf_counter() - start)
+# start = time.perf_counter()
+# make_power_iteration_vjp = torch.compile(
+#     make_power_iteration_vjp, backend="inductor", dynamic=True
+# )
+# print("Compiling VJP took:", time.perf_counter() - start)
 
 
 def fixed_point_solver(
@@ -712,13 +712,15 @@ def estimate_spectral_radius(
 class Eigsh(torch.autograd.Function):
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (a, m, _, sigma, maxiter, tol, adjoint) = inputs
+        (a, m, _, sigma, maxiter, tol, bwd_method, bwd_max_iter, bwd_eps) = inputs
         evals, evecs = output
         ctx.save_for_backward(a, m, evals, evecs)
-        ctx.adjoint = adjoint
+        ctx.adjoint = bwd_method
         ctx.sigma = sigma
         ctx.maxiter = maxiter
         ctx.tol = tol
+        ctx.bwd_max_iter = bwd_max_iter
+        ctx.bwd_eps = bwd_eps
 
     @staticmethod
     def forward(
@@ -728,14 +730,16 @@ class Eigsh(torch.autograd.Function):
         sigma: float = 0.0,
         maxiter: int = 10,
         tol: float = 1e-10,
-        adjoint: Literal["unroll"] = "unroll",
+        bwd_method: Literal["unroll"] = "unroll",
+        bwd_max_iter: int = 200,
+        bwd_eps: float = 1e-12,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         assert isinstance(A, torch.Tensor)
         assert isinstance(M, torch.Tensor)
 
         device = A.device
         dtype = M.dtype
-        if device == torch.device("cpu"):
+        if A.is_cpu:
             A_sp = sp.torch_to_scipy(A)  # noqa: N806
             M_sp = sp.torch_to_scipy(M)  # noqa: N806
             if k < A.shape[0] - 1:
@@ -754,7 +758,7 @@ class Eigsh(torch.autograd.Function):
             )
         else:
             raise NotImplementedError(
-                f"CUDA sparse eigensolver with adjoint {adjoint} not implemented."
+                f"CUDA sparse eigensolver with adjoint {bwd_method} not implemented."
             )
 
     @staticmethod
@@ -800,10 +804,10 @@ class Eigsh(torch.autograd.Function):
                 lhs_i = torch.arange(n, device=device, dtype=torch.int64)
                 lhs_j = torch.full([n], n, device=device, dtype=torch.int64)
                 for i in range(evals.shape[0]):
-                    lhs_aa = a - evals[i] * eye
+                    lhs_aa = (a - evals[i] * eye).coalesce()
                     lhs = torch.sparse_coo_tensor(
                         lhs_aa.indices(), lhs_aa.values(), size=[n + 1, n + 1]
-                    )
+                    ).coalesce()
                     lhs = sp.append(lhs, torch.stack([lhs_i, lhs_j]), -evecs[:, i])
                     lhs = sp.append(lhs, torch.stack([lhs_j, lhs_i]), -evecs[:, i])
                     if grad_evals is None:
@@ -839,7 +843,7 @@ class Eigsh(torch.autograd.Function):
             elif ctx.adjoint == "dodik-fixedpoint":
                 # TODO: eigenvalue loss
 
-                init = torch.randn_like(evecs)
+                init = torch.zeros_like(evecs)
 
                 # rho = estimate_spectral_radius(lambda z: vjp(z)[1], init, 10)
                 # print("RHO", rho)
@@ -852,13 +856,13 @@ class Eigsh(torch.autograd.Function):
 
                 start = time.perf_counter()
                 vjp_evecs, vjp_a = make_power_iteration_vjp(a, evecs, m, ctx.sigma)
-                print("Making VJP took:", time.perf_counter() - start)
+                # print("Making VJP took:", time.perf_counter() - start)
                 u = -gmres_solve(
                     lambda z: vjp_evecs(z)[0],
                     grad_evecs,
                     init,
-                    maxiter=ctx.maxiter,
-                    tol=ctx.tol,
+                    maxiter=ctx.bwd_max_iter,
+                    tol=ctx.bwd_eps,
                 )
 
                 grad_a = vjp_a(u)[0]
@@ -866,7 +870,7 @@ class Eigsh(torch.autograd.Function):
         if grad_a is not None:
             # Ensure symmetry of gradients:
             grad_a = 0.5 * (grad_a + grad_a.mT)
-        return grad_a, None, None, None, None, None, None
+        return grad_a, None, None, None, None, None, None, None, None
 
 
 def eigsh(
@@ -876,11 +880,15 @@ def eigsh(
     sigma: float | None = None,
     maxiter: int = 100,
     tol: float = 1e-8,
-    adjoint: Literal[
+    bwd_method: Literal[
         "unroll", "individual", "truncate", "dodik-fixedpoint", "dodik-invert"
     ] = "individual",
+    bwd_max_iter: int = 200,
+    bwd_eps: float = 1e-12,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if adjoint == "unroll":
+    if bwd_method == "unroll":
         return power_iterations(A, M, k=k, sigma=sigma, maxiter=maxiter, tol=tol)
     else:
-        return Eigsh.apply(A, M, k, sigma, maxiter, tol, adjoint)
+        return Eigsh.apply(
+            A, M, k, sigma, maxiter, tol, bwd_method, bwd_max_iter, bwd_eps
+        )
