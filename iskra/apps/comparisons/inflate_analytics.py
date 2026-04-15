@@ -143,12 +143,12 @@ def main():
                 else:
                     df_gpu.loc[df["Mesh Name"] == mesh_name, r"Theseus"] = time
 
-        def plot_df(df, out_path):
+        def plot_df(df, device, out_path):
             df = df.sort_values(n_verts_col)
             fig, ax = plt.subplots(figsize=(14, 14), layout="constrained", dpi=300)
             # fig.patch.set_alpha(0.0)
             # ax.patch.set_alpha(0.0)
-            ax.set_ylabel("Time (s)")
+            ax.set_ylabel(f"Runtime {device} (s)")
             plot_df = df.loc[:, df.columns != "Mesh Name"]
             plot_df.loc[:, plot_df.columns != n_verts_col] *= 1e-3
             colors = (
@@ -179,9 +179,10 @@ def main():
         plot_dir = Path().home() / "Dropbox" / "Results" / "iskra" / "inflate_2"
         plot_df(
             df_gpu,
+            "GPU",
             plot_dir / f"mcf_{plot_type.lower()}_gpu.png",
         )
-        plot_df(df, plot_dir / f"mcf_{plot_type.lower()}_cpu.png")
+        plot_df(df, "CPU", plot_dir / f"mcf_{plot_type.lower()}_cpu.png")
 
     # print(f"{mesh_path.name} ({num_vertices} vertices) - {method}_{device}_{dtype}")
     # print(f"  Profile: {profile_data}\n")

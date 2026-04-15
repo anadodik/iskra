@@ -1,6 +1,5 @@
 name: iskra
 channels:
-  - pytorch
   - nvidia
   - conda-forge
 dependencies:
@@ -25,7 +24,7 @@ dependencies:
   - pip
   - pip:
       # Core libraries
-      - pytorch==2.9
+      - torch==2.9
       - nvmath-python[cu12-dx]
       - cuda-toolkit[nvcc,nvrtc]==12.8.*
       - --extra-index-url https://download.pytorch.org/whl/cu128

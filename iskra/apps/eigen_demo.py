@@ -65,7 +65,7 @@ def test_adjoint(
             evals = evals[sort_idx][:k]
             evecs = evecs[:, sort_idx][:, :k]
     else:
-        evals, evecs = eigsh(lap, M=mass, k=k, sigma=sigma, adjoint=adjoint)
+        evals, evecs = eigsh(lap, M=mass, k=k, sigma=sigma, bwd_method=adjoint)
     forward_time = time.perf_counter() - start
 
     # loss = ((evecs.abs() - 0.5) ** 2).sum()
@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     n = lap.shape[0]
     k = 3
-    sigma = None  # -1e-12
+    sigma = -1e-12
 
     methods = [
         "unroll",

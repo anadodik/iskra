@@ -148,6 +148,8 @@ def vertex_normals(
 
             normals = torch.zeros([vertices.shape[0], 3], device=face_normals.device)
             broadcast_faces = faces[:, :, None].expand(-1, -1, 3)
+            # TODO: angles undefined, fix.
+            angles = interior_angles(simplices, signed=False, face_normals=face_normals)
             for i in range(faces.shape[-1]):
                 normals.scatter_add_(
                     0, broadcast_faces[:, i, ...], angles[:, i : i + 1] * face_normals

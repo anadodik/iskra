@@ -112,11 +112,13 @@ def print_identity(x: torch.Tensor, name: str) -> torch.Tensor:
 
         @staticmethod
         def backward(ctx, grad_output):
-            print(f"backward passthrough: {ctx.name}: {grad_output}")
+            print(
+                f"backward passthrough: {ctx.name}: {grad_output.is_sparse}, {grad_output.shape}"
+            )
             return grad_output, None
 
     cls = type(name + "_pt_", (_PrintFn,), {})
     if x.is_sparse:
-        return cls.apply(x.to_dense(), name).to_sparse_coo()
+        return x  # cls.apply(x, name)
     else:
         return cls.apply(x, name)

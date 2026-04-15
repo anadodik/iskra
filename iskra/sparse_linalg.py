@@ -290,10 +290,14 @@ def min_quadratic_energy(
 
 
 def power_iteration(
-    a: torch.Tensor, x: torch.Tensor, m: torch.Tensor, sigma: float | None
+    a: torch.Tensor,
+    x: torch.Tensor,
+    m: torch.Tensor,
+    sigma: float | None,
+    solver: SolverT | None = None,
 ) -> torch.Tensor:
     if sigma is not None:
-        evecs = linear_solve(a - sigma * m, torch.sparse.mm(m, x))[1]
+        evecs = linear_solve(a - sigma * m, torch.sparse.mm(m, x), solver)[1]
     else:
         evecs = torch.sparse.mm(a, x)
     evecs = torch.linalg.qr(evecs)[0]
@@ -336,16 +340,20 @@ def power_iterations(
     M_sqrt_inv._values().copy_(1 / M._values().sqrt())
     M_sqrt_inv = M_sqrt_inv.coalesce()  # noqa: N806
 
+    if sigma is not None:
+        system = A - sigma * M
+        solver = default_solver(system)
+
+    A = A.to_sparse_csr()
+    M = M.to_sparse_csr()
     for it in range(maxiter):
         if sigma is not None:
-            z = linear_solve(A - sigma * M, torch.sparse.mm(M, evecs))[1]
+            solver, z = linear_solve(system, sp.matmul(M, evecs), solver)
         else:
-            z = torch.sparse.mm(A, evecs)
+            z = sp.matmul(A, evecs)
         z, _ = torch.linalg.qr(z)
         # z = M_sqrt_inv @ z
-        z = z / torch.sqrt(
-            (z.conj() * (torch.sparse.mm(M, z))).sum(dim=0, keepdim=True).real
-        )
+        z = z / torch.sqrt((z.conj() * (sp.matmul(M, z))).sum(dim=0, keepdim=True).real)
 
         if torch.linalg.vector_norm(evecs - z).all() < tol:
             evecs = z
@@ -353,7 +361,7 @@ def power_iterations(
             break
         evecs = z
     # Rayleigh quotient for generalized eigenvalue
-    evals = (evecs.conj() * torch.sparse.mm(A, evecs)).sum(-2)
+    evals = (evecs.conj() * sp.matmul(A, evecs)).sum(-2)
 
     sort_idx = torch.argsort(-torch.abs(evals - (sigma if sigma is not None else 0)))
     evals = evals[sort_idx]
@@ -363,12 +371,18 @@ def power_iterations(
 
 
 def make_power_iteration_vjp(
-    a: torch.Tensor, evecs: torch.Tensor, m: torch.Tensor, sigma: float | None
+    a: torch.Tensor,
+    evecs: torch.Tensor,
+    m: torch.Tensor,
+    sigma: float | None,
+    solver: SolverT | None = None,
 ) -> tuple[Callable[[torch.Tensor], tuple[torch.Tensor, ...]], ...]:
     with torch.enable_grad():
         a_g = a.clone().requires_grad_(True)
         evecs_g = evecs.clone().requires_grad_(True)
-        evecs_out = power_iteration(a_g, evecs_g, m, sigma)
+        if sigma is not None and solver is None:
+            solver = default_solver(a - sigma * m)
+        evecs_out = power_iteration(a_g, evecs_g, m, sigma, solver=solver)
         evecs_out = evecs_out - evecs_g
 
         def vjp_evecs(z_grad: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -746,7 +760,7 @@ class Eigsh(torch.autograd.Function):
             M_sp = sp.torch_to_scipy(M)  # noqa: N806
             if k < A.shape[0] - 1:
                 evals, evecs = scipy.sparse.linalg.eigsh(
-                    A_sp, k=k, M=M_sp, sigma=sigma, maxiter=maxiter, tol=tol
+                    A_sp, k=k, sigma=sigma, maxiter=maxiter, tol=tol
                 )
             else:
                 A_sp = A_sp.toarray()  # noqa: N806
@@ -856,7 +870,7 @@ class Eigsh(torch.autograd.Function):
                 #     lambda z: grad_evecs + vjp(z)[1], init, ctx.maxiter, ctx.tol
                 # )
 
-                start = time.perf_counter()
+                # start = time.perf_counter()
                 vjp_evecs, vjp_a = make_power_iteration_vjp(a, evecs, m, ctx.sigma)
                 # print("Making VJP took:", time.perf_counter() - start)
                 u = -gmres_solve(
@@ -880,12 +894,12 @@ def eigsh(
     M: torch.Tensor | None = None,  # noqa: N803
     k: int = 1,
     sigma: float | None = None,
-    maxiter: int = 100,
+    maxiter: int = 200,
     tol: float = 1e-8,
     bwd_method: Literal[
         "unroll", "individual", "truncate", "dodik-fixedpoint", "dodik-invert"
     ] = "individual",
-    bwd_max_iter: int = 200,
+    bwd_max_iter: int = 100,
     bwd_eps: float = 1e-12,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if bwd_method == "unroll":
