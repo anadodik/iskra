@@ -302,10 +302,11 @@ def main(
     device = torch.device(device_name)
     dtype = getattr(torch, dtype_name)
 
-    results_dir = Path.home() / "Dropbox" / "Results" / "iskra" / "arap_2"
+    results_dir = Path.home() / r"Dropbox (MIT)" / "Results" / "iskra" / "arap_2"
     results_dir = results_dir / mesh_path.stem / f"{method}_{device_name}_{dtype_name}"
 
-    torch.cuda.reset_peak_memory_stats()
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
     # Load meshes
     mesh, _ = Mesh.from_path(mesh_path, dtype=dtype, device=device)
@@ -450,15 +451,22 @@ def main(
         pass
     elif platform.system().lower().startswith("darwin"):
         peak_rss_cpu = peak_rss_cpu / 1024
-    peak_rss_gpu = torch.cuda.max_memory_allocated() / 1024
-
-    mem_cpu_str = f"Peak (CPU): {peak_rss_cpu} KB, {peak_rss_cpu / (1024 * 1024)} GB"
-    mem_gpu_str = f"Peak (GPU): {peak_rss_gpu} KB, {peak_rss_gpu / (1024 * 1024)} GB"
-    print(mem_cpu_str)
-    print(mem_gpu_str)
+    if torch.cuda.is_available():
+        peak_rss_gpu = torch.cuda.max_memory_allocated() / 1024
 
     with Path(results_dir, "memory.txt").open("w") as f:
-        f.writelines([mem_cpu_str, mem_gpu_str])
+        mem_cpu_str = (
+            f"Peak (CPU): {peak_rss_cpu} KB, {peak_rss_cpu / (1024 * 1024)} GB"
+        )
+        print(mem_cpu_str)
+        f.writelines([mem_cpu_str])
+
+        if torch.cuda.is_available():
+            mem_gpu_str = (
+                f"Peak (GPU): {peak_rss_gpu} KB, {peak_rss_gpu / (1024 * 1024)} GB"
+            )
+            print(mem_gpu_str)
+            f.writelines([mem_gpu_str])
 
 
 if __name__ == "__main__":
@@ -467,6 +475,7 @@ if __name__ == "__main__":
     python -m iskra.apps.inverse_arap data/penguin/penguin.obj data/penguin/penguin_deformed.obj --handles data/penguin/penguin_handles.txt --lr 5 --arap_steps 100 --steps 150
     python -m iskra.apps.comparisons.arap ~/Dropbox/Data/iskra-data/arap/armadillo/armadillo.obj  ~/Dropbox/Data/iskra-data/arap/armadillo/armadillo_deformed.obj --handles ~/Dropbox/Data/iskra-data/arap/armadillo/armadillo_handles.txt --lr 10 --arap_steps 200
     python -m iskra.apps.inverse_arap data/springer_rm/springer.obj data/springer_rm/springer_deformed.obj --handles data/springer_rm/springer_handles.txt --lr 5 --arap_steps 100
+    python -m iskra.apps.comparisons.arap ~/Dropbox\ \(MIT\)/Data/iskra-data/arap/cow_lr/cow_lr.obj  ~/Dropbox\ \(MIT\)/Data/iskra-data/arap/cow_lr/cow_lr_deformed.obj --handles ~/Dropbox\ \(MIT\)/Data/iskra-data/arap/cow_lr/cow_lr_handles.txt --lr 5 --arap_steps 25 --steps 200
     """
     print(f"Default num_threads: {torch.get_num_threads()}")
 
