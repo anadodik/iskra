@@ -1,13 +1,11 @@
-# Iskra ✨ - Tensor Geometry Processing
+# `iskra` ✨ - Tensor Geometry Processing
 
 ![](docs/logo.webp)
 
 This repository contains a lightweight geometry processing library that is meant to be a one-stop-shop for all of your geometric needs. Iskra is:
-* modern,
-* Python-first,
+* modern and Python-first,
 * simple by default, powerful when needed,
 * fully differentiable (if needed),
-* functionality-wise on pair with `gptoolbox`,
 * actievely maintained.
 
 ## Obtaining Iskra ✨
@@ -37,33 +35,6 @@ conda activate iskra
 pip install --no-build-isolation -Ceditable.rebuild=true -ve .
 ```
 
-### Development Plan
-- [ ] Import code from other repos.
-    - [X] Topology operations.
-    - [ ] Differential operators: d_01, grad, div, laplacian, mass matrices, etc.
-        - [ ] Refactor mass and intrinsic volume computation.
-    - [ ] Mesh loading and saving.
-- [ ] Basic batched learning support.
-- [ ] Make sure everything is tested.
-- [ ] Add sphinx documentation.
-- [ ] Figure out dependency management for deployment.
-- [ ] NumPy and DLPack support with no copies using `torch.from_numpy` and `torch.from_dlpack`.
-- [ ] Missing `gptoolbox` functions:
-    - [ ] adjacency_dihedral_angle_matrix.m
-    - [ ] adjacency_edge_cost_matrix.m
-    - [ ] adjacency_incident_angle_matrix.m
-    - [ ] alpha_complex.m
-    - [ ] arap.m
-    - [ ] arap_dof.m
-    - [ ] arap_energy.m
-    - [ ] arap_gradient.m
-    - [ ] arap_hessian.m
-    - [ ] arap_linear_block.m
-    - [ ] arap_rhs.m
-    - [ ] arc_to_cubics.m
-    - [ ] axisanglebetween.m
-    - [ ] ... ?
-
 ## FAQ
 - Why the name? 
-    - Iskra means spark in Serbo-Croatian, which alludes to it being a PyTorch library, but mostly I think it sounds cool.
+    - Iskra means “spark” in Serbo-Croatian: a spark enables using (a) torch. We also expect our system to be the spark that ignites exciting research in geometry. Most of all, I think it sounds cool to say.

@@ -1,7 +1,7 @@
 [project]
 name = "iskra"
 version = "0.0.1"
-description = "Iskra: Tensor Geometry Processing Library."
+description = "iskra: Tensor Geometry Processing"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Ana Dodik", email = "anadodik@mit.edu" }]
@@ -22,7 +22,12 @@ dependencies = [
 Homepage = "https://github.com/anadodik/iskra"
 
 [build-system]
-requires = ["scikit-build-core>=0.10.7", "nanobind[dev]>=2.5.0"]
+requires = [
+  "scikit-build-core>=0.10.7",
+  "nanobind[dev]>=2.5.0",
+  "cmake>=4.3.1",
+  "ninja>=1.13.0",
+]
 build-backend = "scikit_build_core.build"
 
 [tool.setuptools]
@@ -132,6 +137,5 @@ include = ["iskra"]
 exclude = ["**/__pycache__"]
 reportMissingImports = "error"
 typeCheckingMode = "basic"
-venvPath = "/opt/homebrew/Caskroom/miniconda/base/envs"
 venv = "iskra"
 pythonVersion = "3.12"
