@@ -1,11 +1,20 @@
 # Copyright (c) 2023 - present, Ana Dodik. All rights reserved.
 
+import itertools
+from collections.abc import Iterable
 from functools import partial
+from typing import Literal
 
 import pytest
 import torch
+from numpy import isin
 
-from iskra.topology import connected_components, edge_flaps, get_subfaces
+from iskra.topology import (
+    connected_components,
+    edge_flaps,
+    get_subfaces,
+    reduce_on_subface,
+)
 
 assert_equal = partial(torch.testing.assert_close, rtol=0, atol=0)
 
@@ -104,3 +113,159 @@ def test_connected_components(disconnected: tuple[int, torch.Tensor]):
     assert n_components == 3
     assert_equal(vertex_labels, torch.tensor([0, 1, 1, 1, 1, 2]))
     assert_equal(face_labels, torch.tensor([1, 1]))
+
+
+def test_scatter(triangles: torch.Tensor):
+    n_verts = 6
+    n_tris = triangles.shape[0]
+
+    # Equivalent of averaging face scalars on vertices:
+    data, data_ndim = torch.randn([n_tris]), 0
+    expected = torch.zeros([n_verts])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            expected[triangles[f, c]] += data[f]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of averaging face scalars on vertices:
+    data, data_ndim = torch.randn([n_tris, 3]), 0
+    expected = torch.zeros([n_verts])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            expected[triangles[f, c]] += data[f, c]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of averaging corner scalars on vertices:
+    data, data_ndim = torch.randn([n_tris, 3]), 0
+    expected = torch.zeros([n_verts])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            expected[triangles[f, c]] += data[f, c]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of averaging face normals on vertices:
+    data, data_ndim = torch.randn([n_tris, 3]), 1
+    expected = torch.zeros([n_verts, 3])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            for d in range(data.shape[-data_ndim]):
+                expected[triangles[f, c], d] += data[f, d]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of weighted averaging of face normals on vertices:
+    data, data_ndim = torch.randn([n_tris, 3, 3]), 1
+    expected = torch.zeros([n_verts, 3])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            for d in range(data.shape[-data_ndim]):
+                expected[triangles[f, c], d] += data[f, c, d]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of weighted averaging of covariances on vertices:
+    data, data_ndim = torch.randn([n_tris, 3, 3]), 2
+    expected = torch.zeros([n_verts, 3, 3])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            data_iter = itertools.product(
+                *(
+                    range(data.shape[dim])
+                    for dim in range(data.ndim - data_ndim, data.ndim)
+                )
+            )
+            for ds in data_iter:
+                expected[triangles[f, c], *ds] += data[f, *ds]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
+    )
+    torch.testing.assert_close(result, expected)
+
+
+def test_batched_scatter(triangles: torch.Tensor):
+    batch_size = 16
+    n_verts = 6
+    n_tris = triangles.shape[0]
+    triangles = triangles[None, :, :].expand(batch_size, -1, -1)
+
+    # Equivalent of averaging face scalars on vertices:
+    data, data_ndim = torch.randn([batch_size, n_tris]), 0
+    expected = torch.zeros([batch_size, n_verts])
+    for b in range(batch_size):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                expected[b, triangles[b, f, c]] += data[b, f]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of averaging corner scalars on vertices:
+    data, data_ndim = torch.randn([batch_size, n_tris, 3]), 0
+    expected = torch.zeros([batch_size, n_verts])
+    for b in range(batch_size):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                expected[b, triangles[b, f, c]] += data[b, f, c]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of averaging face normals on vertices:
+    data, data_ndim = torch.randn([batch_size, n_tris, 3]), 1
+    expected = torch.zeros([batch_size, n_verts, 3])
+    for b in range(batch_size):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                for d in range(data.shape[-data_ndim]):
+                    expected[b, triangles[b, f, c], d] += data[b, f, d]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of weighted averaging of face normals on vertices:
+    data, data_ndim = torch.randn([batch_size, n_tris, 3, 3]), 1
+    expected = torch.zeros([batch_size, n_verts, 3])
+    for b in range(batch_size):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                for d in range(data.shape[-data_ndim]):
+                    expected[b, triangles[b, f, c], d] += data[b, f, c, d]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+    )
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of weighted averaging of covariances on vertices:
+    data, data_ndim = torch.randn([batch_size, n_tris, 3, 3]), 2
+    expected = torch.zeros([batch_size, n_verts, 3, 3])
+    for b in range(batch_size):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                data_iter = itertools.product(
+                    *(
+                        range(data.shape[dim])
+                        for dim in range(data.ndim - data_ndim, data.ndim)
+                    )
+                )
+                for ds in data_iter:
+                    expected[b, triangles[b, f, c], *ds] += data[b, f, *ds]
+    result = reduce_on_subface(
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+    )
+    torch.testing.assert_close(result, expected)

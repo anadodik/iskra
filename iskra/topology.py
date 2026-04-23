@@ -1,5 +1,6 @@
 # Copyright (c) 2022 - present, Ana Dodik. All rights reserved.
 
+import itertools
 from itertools import combinations
 from typing import Literal
 
@@ -218,6 +219,19 @@ def vertex_adjacency(faces: torch.Tensor) -> torch.Tensor:
 
 
 def edge_to_vertex_adjacency(values: torch.Tensor) -> torch.Tensor:
+    """Moves scalar edge data to be vertex-vertex data.
+
+    Simply duplicates scalar edge data so it becomes scalar vert-vert data:
+    ```
+    return torch.cat([values, values], -1)
+    ```
+
+    Args:
+        values (Tensor[Bs, E]): Scalar per-edge data.
+
+    Returns:
+        Tensor[Bs, 2E]: Duplicated edge data.
+    """
     return torch.cat([values, values], -1)
 
 
@@ -378,43 +392,90 @@ def face_index(
 
 
 def reduce_on_subface(
-    values: torch.Tensor,
+    data: torch.Tensor,
     faces: torch.Tensor,
     n_subfaces: int,
     reduce: Literal["sum", "prod", "mean", "amax", "amin"],
-    values_ndim: int | None = None,
+    data_ndim: int | None = None,
+    batch_ndim: int = 0,
 ) -> torch.Tensor:
-    """Take values defined on mesh faces and average them onto its vertices.
+    """Reduces data from faces onto constitutive subfaces.
+
+    !!! note
+        This function slices up the data into three parts: `[Bs, Fs, Ds]`,
+        where `Bs` are the batch dimensions, `Ds` are the per-face/per-corner data
+        payload dimensions; `Fs` are the face dimensions which tell us where the data
+        is defined on.
+
+        So, if on a triangle mesh `Fs` are equal to `[F]`, we have one data payload
+        per face, whereas `[F, 3]` implies one data payload per triange-corner.
+
+        Data dimensions are assumed to be greedy under the default parameters: we assume
+        `Fs` are `[F]` and that everything to the right of `Fs` is the data payload.
+
+
+    !!! example
+
+        Some concrete examples are:
+
+        | `data.shape` | `faces.shape` | `data_ndim` | `result.shape` | Example |
+        | ------------- | ------------- | ----------- | -------------- | ------- |
+        | `[B, F]`       | `[B, F, 3]`     | `0`           | `[B, V]`         | averaging corner scalars on vertices |
+        | `[B, F, 3]`    | `[B, F, 3]`     | `0`           | `[B, V]`         | averaging corner scalars on vertices |
+        | `[B, F, 3]`    | `[B, F, 3]`     | `1` or `None`   | `[B, V, 3]`      | averaging face normals on vertices |
+        | `[B, F, 3, 3]` | `[B, F, 3]`     | `1`           | `[B, V, 3]`      | averaging corner normals on vertices |
+        | `[B, F, 3, 3]` | `[B, F, 3]`     | `2` or `None`   | `[B, V, 3, 3]`   | averaging face covariances on vertices |
 
     Args:
-        values (torch.Tensor): Values defined on mesh faces.
-        faces (torch.Tensor): Face indices.
+        data (Tensor[DType, [Bs, F, FSs, Ds]]): Data defined on mesh faces or corners.
+        faces (Tensor[Int64, [Bs, F, FSs]]): Face indices.
         n_subfaces (int): Total number of subfaces in the mesh.
         reduce (Literal["sum", "prod", "mean", "amax", "amin"]): Reduction operation.
+        data_ndim (int | None): Num. dimensions of the per-face (or per-corner) payload.
+        batch_ndim (int): Num. batch dimensions.
 
     Returns:
-        torch.Tensor: _description_
+        Tensor[DType, [Bs, S, Ds]]: Normal vectors of each triangle.
     """
-    assert faces.ndim == 2
+    # Data dims is assumed to be greedy by default, i.e.,
+    # we assume everything that is to the right of the face index is part
+    # of the data payload.
+    if data_ndim is None:
+        data_ndim = data.ndim - 1 - batch_ndim
+    flatten_scalar_dim = False
+    if data_ndim == 0:
+        flatten_scalar_dim = True
+        data_ndim = 1
+        data = data[..., None]
 
-    if values_ndim is None:
-        values_ndim = values.ndim - 1
-    idx_ndim = values.ndim - values_ndim
-    if values_ndim == 0:
-        values_shape = []
-    else:
-        values_shape = values.shape[-values_ndim:]
-    assert values.shape[:idx_ndim] == faces.shape[:idx_ndim]
+    data_shape = data.shape[-data_ndim:]
+    batch_shape = data.shape[:batch_ndim]
+    # matched_ndim, first n dims that are shared between data and faces:
+    matched_ndim = data.ndim - data_ndim
+    assert data.shape[:matched_ndim] == faces.shape[:matched_ndim]
 
-    result = torch.zeros(
-        [n_subfaces, *values_shape], dtype=values.dtype, device=values.device
+    result_shape = (*batch_shape, n_subfaces, *data_shape)
+    result = torch.zeros(result_shape, dtype=data.dtype, device=data.device)
+    subface_gen = itertools.product(
+        *(range(faces.shape[dim]) for dim in range(batch_ndim + 1, faces.ndim))
     )
-    broadcast_faces = faces[(...,) + (None,) * values_ndim]
-    broadcast_faces = broadcast_faces.expand(-1, -1, *values_shape)
-    for i in range(faces.shape[-1]):
-        result = result.scatter_reduce(
-            0, broadcast_faces[:, i, ...], values, reduce=reduce
+    for subface_idcs in subface_gen:
+        face_slice = faces[..., :, *subface_idcs]
+        face_slice = face_slice[..., :, *((None,) * data_ndim)].expand(
+            *((-1,) * (batch_ndim + 1)), *data_shape
         )
+        data_slice = data[
+            ...,
+            :,
+            *subface_idcs[: matched_ndim - 1 - batch_ndim],
+            *((slice(None, None),) * data_ndim),
+        ]
+
+        result = result.scatter_reduce(
+            batch_ndim, face_slice, data_slice, reduce=reduce
+        )
+    if flatten_scalar_dim:
+        result = result.squeeze(-1)
     return result
 
 
