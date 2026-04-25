@@ -54,7 +54,7 @@ def test_arap_adjoint(tet):
 
     bc_vals = bc_vals.requires_grad_(True)
     # , max_iter=35
-    deformed, _ = arap_solve(verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals)
+    deformed, _ = arap_solve(verts, bc_idx, bc_vals, halfedges, halfedge_weights, lap)
     deformed.backward(grad_deformed)
 
     jac_verts, jac_bc = compute_jacobians(

@@ -5,6 +5,7 @@ from typing import Any, Callable, Literal, Sequence, cast
 
 import torch
 
+from iskra.logging import getLogger
 from iskra.profiling import profile_block, profile_fn
 from iskra.sparse_linalg import (
     build_diagonal_preconditioner,
@@ -13,6 +14,8 @@ from iskra.sparse_linalg import (
     estimate_spectral_radius,
     gmres_solve,
 )
+
+LOGGER = getLogger(__name__)
 
 
 def make_vjp[T, **P](
@@ -86,29 +89,31 @@ def make_solver_layer[T, **P](
     iterates: Sequence[tuple[int, int]] | tuple[int, int] = (0, 0),
     argnums: int | tuple[int, ...] = 1,
     fwd_method: Literal["fixed-point"] | Callable[P, T] = "fixed-point",
-    fwd_max_iter: int = 90,
-    fwd_eps: float = 1e-10,
-    fwd_error_arg: int | None = None,
-    fwd_error_tol: float | None = None,
+    fwd_max_iter: int | None = 100,
+    fwd_error_metric: Literal["delta"] | int | None = "delta",
+    fwd_error_ord: int | float | Literal["fro", "nuc"] = 2,
+    fwd_abs_tol: float = 1e-6,
+    fwd_rel_tol: float = 1e-3,
     bwd_method: Literal["gmres"] = "gmres",
     gmres_init: torch.Tensor | None = None,
     callback_gmres_sol: Callable | None = None,
-    bwd_max_iter: int = 200,
-    bwd_eps: float = 1e-12,
+    bwd_max_iter: int = 500,
+    bwd_abs_tol: float = 1e-6,
+    bwd_rel_tol: float = 1e-3,
     verbose: bool = False,
 ) -> Callable[P, T]:
+    if verbose:
+        LOGGER.setLevel("INFO")
     if not isinstance(iterates[0], Sequence):
         iterates = [cast(tuple[int, int], iterates)]
     iterates = cast(Sequence[tuple[int, int]], iterates)
 
     if not isinstance(argnums, Sequence):
         argnums = (argnums,)
+    if fwd_max_iter is not None and fwd_max_iter <= 1:
+        raise ValueError(f"fwd_max_iter must be >= 1, is {fwd_max_iter}.")
 
-    if fwd_error_tol is not None and fwd_error_arg is None:
-        raise ValueError(
-            "Must specify which function output is the error, please set fwd_error_arg."
-        )
-
+    # TODO: look into accelerations: https://docs.sciml.ai/NonlinearSolve/stable/solvers/fixed_point_solvers/
     class SolverFn(torch.autograd.Function):
         @staticmethod
         def setup_context(ctx, inputs, outputs):
@@ -133,10 +138,16 @@ def make_solver_layer[T, **P](
         @staticmethod
         @profile_fn(name="SolverFn.forward")
         def forward(*args: P.args, **kwargs: P.kwargs) -> T:
+            rel_ref = float("inf")
             args_list: list[Any] = list(args)
-            for _ in range(fwd_max_iter):
+            outputs: T | None = None
+            step_i = 0
+            while True:
+                step_i += 1
+                if fwd_max_iter is not None and step_i >= fwd_max_iter:
+                    break
                 with profile_block("fwd_iter"):
-                    outputs = fn(*args_list, **kwargs)
+                    outputs = fn(*args_list, **kwargs)  # type: ignore
                     outputs_tuple = outputs
                     if not isinstance(outputs_tuple, tuple):
                         outputs_tuple = (outputs_tuple,)
@@ -147,25 +158,44 @@ def make_solver_layer[T, **P](
                 after = torch.cat(
                     [outputs_tuple[iterate[1]].flatten() for iterate in iterates]
                 )
-                with torch.no_grad():
-                    # TODO: figure out criterion
-                    difference = torch.norm((before - after).flatten())
-                    for iterate in iterates:
-                        args_list[iterate[0]] = outputs_tuple[iterate[1]]
-                    if difference < fwd_eps:
-                        break
-                    if fwd_error_arg is not None:
-                        if (outputs_tuple[fwd_error_arg] < fwd_error_tol).all():
-                            break
-                    if verbose:
-                        print(
-                            "Iterate difference (forward): ",
-                            difference.cpu().detach().item(),
-                        )
-            if verbose:
-                print(
-                    "Iterate difference (forward): ", difference.cpu().detach().item()
-                )
+
+                for iterate in iterates:
+                    args_list[iterate[0]] = outputs_tuple[iterate[1]]
+                if fwd_error_metric is None:
+                    continue
+
+                if fwd_error_metric == "delta":
+                    error = before - after
+                    rel_ref = torch.linalg.norm(after.flatten(), ord=fwd_error_ord)
+                elif isinstance(fwd_error_metric, int):
+                    error = outputs_tuple[fwd_error_metric]
+                    if rel_ref == float("inf"):
+                        # If user provides residual, we compare tolerances relative to
+                        # the initial residual, as the residual and output
+                        # don't have to have comparable units.
+                        rel_ref = torch.linalg.norm(error.flatten(), ord=fwd_error_ord)
+                else:
+                    raise ValueError(f"Invalid fwd_error_metric={fwd_error_metric}.")
+
+                error_norm = torch.linalg.norm(error.flatten(), ord=fwd_error_ord)
+                if error_norm <= fwd_abs_tol + fwd_rel_tol * rel_ref:
+                    break
+
+                if verbose:
+                    if fwd_error_metric == "delta":
+                        error_str = "delta"
+                    else:
+                        error_str = "residual"
+                    abs_val = error_norm.cpu().detach().item()
+                    rel_val = (
+                        (error_norm / rel_ref).cpu().detach().item()
+                        if rel_ref > 0
+                        else 0.0
+                    )
+                    LOGGER.info(
+                        f"Forward {error_str}: abs={abs_val:.3e}, rel={rel_val:.3e}"
+                    )
+            assert outputs is not None
             return outputs
 
         @staticmethod
@@ -189,7 +219,6 @@ def make_solver_layer[T, **P](
             init = gmres_init
             if init is None:
                 init = torch.zeros_like(grad_iterate)
-                # init = torch.randn_like(grad_iterate)
 
             with profile_block("bwd_optim"):
                 system_fn = lambda z: torch.cat(  # noqa: E731
@@ -210,10 +239,11 @@ def make_solver_layer[T, **P](
                         system_fn,
                         grad_iterate,
                         init,
-                        maxiter=bwd_max_iter,
-                        tol=bwd_eps,
+                        max_iter=bwd_max_iter,
+                        abs_tol=bwd_abs_tol,
+                        rel_tol=bwd_rel_tol,
                         preconditioner=preconditioner,
-                        # verbose=verbose,
+                        verbose=verbose,
                     )
                     if callback_gmres_sol is not None:
                         callback_gmres_sol(-dl_df)
@@ -237,7 +267,7 @@ def make_solver_layer[T, **P](
                 ).flatten()
             )
             if verbose:
-                print(f"Iterate difference (backward): {gmres_error.item()}")
+                LOGGER.info(f"Iterate difference (backward): {gmres_error.item()}")
 
             with profile_block("bwd_inputs"):
                 grad_param = vjp_params(dl_df)
@@ -259,7 +289,6 @@ def compute_numerical_jacobian[T, **P](
 ) -> torch.Tensor:
     args_list = list(args)
     arg = args[argnum]
-    print(arg)
     if not isinstance(arg, torch.Tensor):
         raise ValueError(
             f"Requested numerical gradient w.r.t. parameter at position {argnum}, "

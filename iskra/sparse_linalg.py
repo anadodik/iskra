@@ -438,24 +438,29 @@ def gmres_solve(
     f: Callable[[torch.Tensor], torch.Tensor],
     b: torch.Tensor,
     init: torch.Tensor,
-    maxiter: int,
-    tol: float,
+    max_iter: int,
+    abs_tol: float,
+    rel_tol: float,
     preconditioner: Callable[[torch.Tensor], torch.Tensor] | None = None,
     verbose: bool = False,
 ) -> torch.Tensor:
-    """Optimized matrix-free GMRES solver for (I - J^T) u = b.
+    """Matrix-free GMRES solver for (I - J^T) u = b.
 
     Arguments:
-        f (Callable[[torch.Tensor], torch.Tensor]): Computes J^T @ z  (vector-Jacobian product)
-        b (torch.Tensor): Right-hand side of linear system, same shape as u.
-        init (torch.Tensor): Initial guess for u.
-        maxiter (int): Maximum number of iterations for the solver.
-        tol (float): Minimum tolerance the solver needs to reach before exiting.
-        preconditioner (Optional[Callable]): Applies M^{-1} to a vector. If None, no preconditioning.
+        f (Callable[[Tensor], Tensor]): Computes J^T @ z  (vector-Jacobian product)
+        b (Tensor): Right-hand side of linear system, same shape as u.
+        init (Tensor): Initial guess for u.
+        max_iter (int): Maximum number of iterations for the solver.
+        abs_tol (float): Absolute tolerance the solver needs to reach before exiting.
+        rel_tol (float): Relative tolerance the solver needs to reach before exiting.
+        preconditioner (Optional[Callable]): Optionally applies preconditioner.
+        verbose (bool): Whether to print logging information.
 
     Returns:
         (torch.Tensor): Solution to the linear system (I - J^T) u = b.
     """
+    if verbose:
+        LOGGER.setLevel("INFO")
     shape = b.shape
     device, dtype = b.device, b.dtype
     dim = b.numel()
@@ -467,23 +472,24 @@ def gmres_solve(
     if preconditioner is not None:
         res = preconditioner(res.reshape(shape)).flatten()
 
-    res_norm = torch.norm(res)
-    # if res_norm < tol:
-    #     return init
+    initial_res_norm = torch.linalg.norm(res)
+    if initial_res_norm < abs_tol:
+        LOGGER.warning("Early exiting GMRES, initial guess is below norm.")
+        return init
 
-    krylov_basis = torch.zeros((dim, maxiter + 1), dtype=dtype, device=device)
-    krylov_basis[:, 0] = res / res_norm
+    krylov_basis = torch.zeros((dim, max_iter + 1), dtype=dtype, device=device)
+    krylov_basis[:, 0] = res / initial_res_norm
 
-    hessenberg = torch.zeros((maxiter + 1, maxiter), dtype=dtype, device=device)
+    hessenberg = torch.zeros((max_iter + 1, max_iter), dtype=dtype, device=device)
 
-    cos_vals = torch.zeros(maxiter, dtype=dtype, device=device)
-    sin_vals = torch.zeros(maxiter, dtype=dtype, device=device)
+    cos_vals = torch.zeros(max_iter, dtype=dtype, device=device)
+    sin_vals = torch.zeros(max_iter, dtype=dtype, device=device)
 
-    g = torch.zeros(maxiter + 1, dtype=dtype, device=device)
-    g[0] = res_norm
+    g = torch.zeros(max_iter + 1, dtype=dtype, device=device)
+    g[0] = initial_res_norm
 
     k = 0
-    for k in range(maxiter):
+    for k in range(max_iter):
         q_k = krylov_basis[:, k].reshape(shape)
         w = f(q_k).flatten()
 
@@ -493,7 +499,7 @@ def gmres_solve(
         hessenberg[: k + 1, k] = krylov_basis[:, : k + 1].T @ w
         w = w - krylov_basis[:, : k + 1] @ hessenberg[: k + 1, k]
 
-        hessenberg[k + 1, k] = torch.norm(w)
+        hessenberg[k + 1, k] = torch.linalg.norm(w)
         if hessenberg[k + 1, k] > 1e-12:
             krylov_basis[:, k + 1] = w / hessenberg[k + 1, k]
         else:
@@ -519,11 +525,36 @@ def gmres_solve(
         g[k] = cos_vals[k] * g[k]
 
         res = abs(g[k + 1])
-        if res < tol:
-            break
 
+        if verbose:
+            abs_val = res.cpu().detach().item()
+            rel_val = (
+                (res / initial_res_norm).cpu().detach().item()
+                if initial_res_norm > 0
+                else 0.0
+            )
+            LOGGER.info(
+                f"GMRES residuals: res={abs_val:.3e}, "
+                f"(tol={abs_tol + rel_tol * initial_res_norm:.3e}), "
+                f"res_rel={rel_val:.3e} (rel_tol={rel_tol:.3e})."
+            )
+        if res <= abs_tol + rel_tol * initial_res_norm:
+            break
     if verbose:
-        LOGGER.info(f"GMRES exiting after {k + 1} iterations, residual: {res:.6e}")
+        LOGGER.info(f"GMRES exiting after {k + 1} iterations, residual: {res:.3e}")
+    if res > abs_tol + rel_tol * initial_res_norm:
+        abs_val = res.cpu().detach().item()
+        rel_val = (
+            (res / initial_res_norm).cpu().detach().item()
+            if initial_res_norm > 0
+            else 0.0
+        )
+        LOGGER.warning(
+            f"GMRES did not converge within {max_iter} iterations.\n"
+            f"Residuals: abs={abs_val:.3e} "
+            f"(tol={abs_tol + rel_tol * initial_res_norm:.3e}), "
+            f"rel={rel_val:.3e} (rel_tol={rel_tol:.3e})."
+        )
 
     y = torch.zeros(k + 1, dtype=dtype, device=device)
     for i in range(k, -1, -1):
@@ -877,7 +908,7 @@ class Eigsh(torch.autograd.Function):
                     lambda z: vjp_evecs(z)[0],
                     grad_evecs,
                     init,
-                    maxiter=ctx.bwd_max_iter,
+                    max_iter=ctx.bwd_max_iter,
                     tol=ctx.bwd_eps,
                 )
 

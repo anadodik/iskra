@@ -11,114 +11,12 @@ import torch
 import iskra.sparse as sp
 from iskra.adjoint import make_solver_layer
 from iskra.dec import d_01, d_10, laplacian
+from iskra.deformation import arap_precompute, arap_solve
 from iskra.geometry import cotan_weights
 from iskra.mesh import Mesh
 from iskra.signed_svd import closest_rot_3x3, polar_3x3, signed_svd
 from iskra.sparse_linalg import gmres_solve, min_quadratic_energy
 from iskra.topology import boundary, face_index, get_subfaces, reduce_on_subface
-
-
-def arap_step(verts_deformed, verts_rest, cots, halfedges, lap, bc_idx, bc_vals):
-    n_vertices = verts_rest.shape[0]
-
-    lines = face_index(verts_rest, halfedges)
-    vecs = lines[..., 1, :] - lines[..., 0, :]
-    lines_deformed = face_index(verts_deformed, halfedges)
-    vecs_deformed = lines_deformed[..., 1, :] - lines_deformed[..., 0, :]
-    covs = cots[..., None, None] * vecs_deformed[..., None, :] * vecs[..., :, None]
-
-    vert_covs = reduce_on_subface(covs, halfedges[:, 0:1], n_vertices, "sum")
-    vert_rot = closest_rot_3x3(vert_covs)
-    # vert_u, _, vert_vt = signed_svd(vert_covs)
-    # vert_rot = vert_vt.mT @ vert_u.mT
-
-    halfedge_rot = face_index(vert_rot.mT, halfedges).mean(1)
-    rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
-
-    rhs = reduce_on_subface(rotated_halfedge_vecs, halfedges[:, 0:1], n_vertices, "sum")
-    verts_deformed = min_quadratic_energy(lap, -rhs, bc_idx, bc_vals)[1]
-    return verts_deformed
-
-
-def arap_step(
-    verts_deformed: torch.Tensor,
-    verts: torch.Tensor,
-    halfedge_weights: torch.Tensor,
-    halfedges: torch.Tensor,
-    lap: torch.Tensor,
-    bc_idx: torch.Tensor,
-    bc_vals: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    n_vertices = verts.shape[0]
-
-    lines = face_index(verts, halfedges)
-    vecs = lines[..., 1, :] - lines[..., 0, :]
-
-    lines_deformed = face_index(verts_deformed, halfedges)
-    vecs_deformed = lines_deformed[..., 1, :] - lines_deformed[..., 0, :]
-
-    halfedge_covs = (
-        halfedge_weights[..., None, None]
-        * vecs_deformed[..., None, :]
-        * vecs[..., :, None]
-    )
-
-    vert_covs = reduce_on_subface(halfedge_covs, halfedges[:, 0:1], n_vertices, "sum")
-    # vert_u, _, vert_vt = signed_svd(vert_covs)
-    # vert_rot = vert_vt.mT @ vert_u.mT
-    vert_rot = closest_rot_3x3(vert_covs).mT
-    # Uncomment to debug SVD:
-    # vert_rot = vert_covs * 0.0 + torch.eye(3, dtype=vert_u.dtype)[None, :, :].expand(
-    #     n_vertices, -1, -1
-    # )
-    assert (torch.linalg.det(vert_rot) > 0).all()
-
-    # Following lines are energy only:
-    halfedge_vert_rot = face_index(vert_rot, halfedges)[:, 0, ...]
-    diff = vecs_deformed - (halfedge_vert_rot @ vecs[..., None])[..., 0]
-    weighted_dist = (
-        halfedge_weights * torch.linalg.vector_norm(diff, dim=-1, ord=2) ** 2
-    )
-    vert_energy = reduce_on_subface(weighted_dist, halfedges[:, 0:1], n_vertices, "sum")
-
-    # THIS IS INTERPOLATING ROTATIONS WEIRDLY??? SHRINKWRAP ARTIFACTS?
-    halfedge_rot = face_index(vert_rot, halfedges).mean(1)
-    rotated_halfedge_vecs = (
-        halfedge_weights[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
-    )
-
-    rhs = reduce_on_subface(rotated_halfedge_vecs, halfedges[:, 0:1], n_vertices, "sum")
-    verts_deformed = min_quadratic_energy(lap, -rhs, bc_idx, bc_vals)[1]
-    print(vert_energy.sum())
-    return verts_deformed, vert_energy
-
-
-def arap_solve(
-    verts: torch.Tensor,
-    halfedge_weights: torch.Tensor,
-    halfedges: torch.Tensor,
-    lap: torch.Tensor,
-    bc_idx: torch.Tensor,
-    bc_vals: torch.Tensor,
-    max_iter: int = 50,
-    eps: float = 1e-12,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    solver = make_solver_layer(
-        arap_step,
-        [(0, 0)],
-        (2, 4, 6),
-        fwd_method="fixed-point",
-        fwd_max_iter=max_iter,
-        fwd_eps=eps,
-        bwd_method="gmres",
-        bwd_max_iter=200,
-        bwd_eps=1e-12,
-    )
-
-    init = verts.clone()
-    # TODO: Next line only necessary because of bad gradients with identity matrix?
-    init[bc_idx] = bc_vals
-    return solver(init, verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals)
 
 
 def main(
@@ -135,7 +33,7 @@ def main(
     bdr_verts = verts[bdr_idx]
 
     if handles_path is None:
-        control_idx = torch.empty([0], device=device, dtype=torch.int64)
+        control_idx = torch.tensor([0, 1, 2], device=device, dtype=torch.int64)
     else:
         print(f"Opening handles path: {handles_path}")
         with Path(handles_path).open("r") as f:
@@ -154,12 +52,9 @@ def main(
     bc_idx = torch.cat([bdr_idx, control_idx])
     bc_vals = torch.cat([bdr_verts, control_verts])
 
-    weights = cotan_weights(verts, faces).clamp_min(1e-5)
-    lap, _ = laplacian(verts, faces, clamp_min=1e-5)
-    edges, _, _ = get_subfaces(faces)
-    _, edge_verts, _ = get_subfaces(edges)
-    halfedges = torch.cat([edge_verts, edge_verts.flip(-1)], 0)
-    halfedge_weights = torch.cat([weights, weights], 0)
+    halfedges, halfedge_weights, lap, lap_factors = arap_precompute(
+        verts, faces, bc_idx
+    )
 
     arap_data_igl = igl.ARAPData()
     arap_data_igl.energy = igl.ARAPEnergyType.ARAP_ENERGY_TYPE_SPOKES
@@ -169,7 +64,7 @@ def main(
         arap_deformed_igl = verts
     else:
         deformed, energy = arap_solve(
-            verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals
+            verts, bc_idx, bc_vals, halfedges, halfedge_weights, lap, lap_factors
         )
         igl.arap_precomputation(
             verts.numpy(), faces.numpy(), 3, bc_idx.numpy(), arap_data_igl
@@ -238,7 +133,13 @@ def main(
                     bc_vals = torch.cat([bdr_verts, control_verts])
 
                     deformed, energy = arap_solve(
-                        verts, halfedge_weights, halfedges, lap, bc_idx, bc_vals
+                        verts,
+                        bc_idx,
+                        bc_vals,
+                        halfedges,
+                        halfedge_weights,
+                        lap,
+                        lap_factors,
                     )
                     print(energy.mean())
                     ps_mesh.update_vertex_positions(deformed.detach().numpy())

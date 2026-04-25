@@ -66,7 +66,7 @@ def main(
     optimizer.zero_grad()
     print("Solving with iskra.")
     deformed, energy = arap_solve(
-        verts, vert_vert_weights, vert_vert, lap, handle_idx, handles, lap_factors
+        verts, handle_idx, handles, vert_vert, vert_vert_weights, lap, lap_factors
     )
     loss = ((deformed[marker_idx] - target_markers_verts) ** 2).mean()
     loss.backward()
@@ -145,17 +145,19 @@ def main(
                     optimizer.zero_grad()
                     deformed, energy = arap_solve(
                         verts,
-                        vert_vert_weights,
-                        vert_vert,
-                        lap,
                         handle_idx,
                         handles,
+                        vert_vert,
+                        vert_vert_weights,
+                        lap,
                         lap_factors,
                         fwd_max_iter=arap_steps,
                         bwd_max_iter=500,
+                        verbose=False,
                     )
-                    print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
                     loss = ((deformed[marker_idx] - target_markers_verts) ** 2).mean()
+                    print(f"Step {optim_step}.")
+                    print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
                     print(f"Loss = {loss.detach().cpu().item()}.")
                     loss.backward()
                     optimizer.step()
@@ -169,7 +171,6 @@ def main(
                     optimizing = False
 
                 with torch.no_grad():
-                    print(f"Step {optim_step}.")
                     ps_cloud.update_point_positions(handles.detach().cpu().numpy())
                     arap_deformed_igl = igl.arap_solve(
                         handles.detach().cpu().numpy(),

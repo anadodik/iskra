@@ -62,7 +62,7 @@ def main(
     optimizer.zero_grad()
     print("Solving with iskra.")
     deformed, energy = arap_solve(
-        verts, vert_vert_weights, vert_vert, lap, handle_idx, handles, lap_factors
+        verts, handle_idx, handles, vert_vert, vert_vert_weights, lap, lap_factors
     )
     loss = ((deformed - target_verts) ** 2).mean()
     loss.backward()
@@ -145,11 +145,11 @@ def main(
                     optimizer.zero_grad()
                     deformed, energy = arap_solve(
                         verts,
-                        vert_vert_weights,
-                        vert_vert,
-                        lap,
                         handle_idx,
                         handles,
+                        vert_vert,
+                        vert_vert_weights,
+                        lap,
                         lap_factors,
                         fwd_max_iter=arap_steps,
                     )

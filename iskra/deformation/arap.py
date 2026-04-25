@@ -16,6 +16,7 @@ import iskra.sparse_linalg as spla
 from iskra.adjoint import make_solver_layer
 from iskra.dec import d_01, d_10, laplacian, laplacian_from_weights
 from iskra.geometry import cotan_weights
+from iskra.logging.logging import getLogger
 from iskra.mesh import Mesh
 from iskra.profiling import global_profiler, profile_block, profile_fn
 from iskra.signed_svd import closest_rot_3x3, polar_3x3, signed_svd
@@ -25,6 +26,8 @@ from iskra.topology import (
     reduce_on_subface,
     vertex_adjacency,
 )
+
+LOGGER = getLogger(__name__)
 
 
 @profile_fn
@@ -62,7 +65,7 @@ def arap_step(
         verts_deformed = spla.min_quadratic_energy(
             lap, -rhs, bc_idx, bc_vals, solver=solver
         )[1]
-    return verts_deformed, torch.full_like(verts_deformed[:, 0], float("inf"))
+    return verts_deformed
 
 
 def _arap_step_paper(deformed, verts, cots, vert_vert, lap, handle_idx, handles):
@@ -142,48 +145,58 @@ def arap_step_with_energy(
 @profile_fn
 def arap_solve(
     verts: torch.Tensor,
-    halfedge_weights: torch.Tensor,
+    handle_idx: torch.Tensor,
+    handles: torch.Tensor,
     vert_vert: torch.Tensor,
+    vert_vert_weights: torch.Tensor,
     lap: torch.Tensor,
-    bc_idx: torch.Tensor,
-    bc_vals: torch.Tensor,
-    lap_factors: spla.SolverT,
-    compute_fwd_energy: bool = True,
-    fwd_max_iter: int = 100,
-    fwd_eps: float = 1e-12,
+    lap_factors: spla.SolverT | None = None,
+    fwd_max_iter: int = 1000,
+    compute_fwd_energy: bool = False,
+    fwd_error_ord: int | float | Literal["fro", "nuc"] = 2,
+    fwd_abs_tol: float = 1e-7,
+    fwd_rel_tol: float = 1e-4,
     bwd_max_iter: int = 200,
-    bwd_eps: float = 1e-5,
+    bwd_abs_tol: float = 1e-7,
+    bwd_rel_tol: float = 1e-4,
     verbose: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    # TODO: warn if len(bc_idx) < 4
     # TODO: fix `profile_fn` not type-checking correctly
-    # TODO: reorder: stuff from `arap_precompute` should come last before kwargs
+    if handle_idx.numel() < 4:
+        LOGGER.warning(
+            "ARAP gradients may be incorrect with fewer than 4 boundary conditions."
+        )
     arap_fn = arap_step
-    fwd_error_arg = None
-    fwd_error_tol = None
+    fwd_error_metric = "delta"
     if compute_fwd_energy:
-        fwd_error_arg = 1
         arap_fn = arap_step_with_energy
-        fwd_error_tol = fwd_eps
+        fwd_error_metric = 1
     solver = make_solver_layer(
         partial(arap_fn, solver=lap_factors),
         [(0, 0)],
         (1, 2, 4, 6),
         fwd_method="fixed-point",
         fwd_max_iter=fwd_max_iter,
-        fwd_error_arg=fwd_error_arg,
-        fwd_error_tol=fwd_error_tol,
-        fwd_eps=fwd_eps,
+        fwd_error_metric=fwd_error_metric,
+        fwd_error_ord=fwd_error_ord,
+        fwd_abs_tol=fwd_abs_tol,
+        fwd_rel_tol=fwd_rel_tol,
         bwd_method="gmres",
         bwd_max_iter=bwd_max_iter,
-        bwd_eps=bwd_eps,
+        bwd_abs_tol=bwd_abs_tol,
+        bwd_rel_tol=bwd_rel_tol,
         verbose=verbose,
     )
 
     init = verts.clone()
     # TODO: Next line only necessary because of bad gradients with identity matrix?
-    init[bc_idx] = bc_vals
-    return solver(init, verts, halfedge_weights, vert_vert, lap, bc_idx, bc_vals)
+    init[handle_idx] = handles
+    result = solver(init, verts, vert_vert_weights, vert_vert, lap, handle_idx, handles)
+    if compute_fwd_energy:
+        return result
+    else:
+        # TODO: fix returns
+        return result, torch.full_like(result[:, 0], float("inf"))
 
 
 def arap_precompute(
