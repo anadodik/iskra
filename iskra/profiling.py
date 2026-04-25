@@ -7,14 +7,9 @@ from collections import defaultdict, deque
 from contextlib import ContextDecorator
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Callable, Literal, cast
+from typing import Callable, Literal, cast, overload
 
-import rich
-from rich.align import Align
-from rich.bar import Bar
-from rich.columns import Columns
-from rich.console import Console, Group
-from rich.panel import Panel
+from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 from rich.tree import Tree
@@ -281,6 +276,21 @@ class Profiler:
 global_profiler = Profiler()
 
 
+@overload
+def profile_fn[T, **P](
+    fn: Callable[P, T],
+    /,
+) -> Callable[P, T]: ...
+
+
+@overload
+def profile_fn[T, **P](
+    *,
+    name: str | None = None,
+    profiler: Profiler = global_profiler,
+) -> Callable[[Callable[P, T]], Callable[P, T]]: ...
+
+
 def profile_fn[T, **P](
     fn: Callable[P, T] | None = None,
     *,
@@ -294,8 +304,10 @@ def profile_fn[T, **P](
             if block_name is None:
                 block_name = fn.__qualname__
             profiler.push(block_name)
-            result: T = fn(*args, **kwargs)
-            profiler.pop()
+            try:
+                result: T = fn(*args, **kwargs)
+            finally:
+                profiler.pop()
             return result
 
         return wrapper
