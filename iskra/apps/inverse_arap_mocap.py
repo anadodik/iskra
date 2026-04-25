@@ -75,56 +75,52 @@ def main(
     arap_data_igl = igl.ARAPData()
     arap_data_igl.energy = igl.ARAPEnergyType.ARAP_ENERGY_TYPE_SPOKES
     arap_data_igl.max_iter = 100
-    with profile_block("igl_arap_precomp"):
-        igl.arap_precomputation(
-            verts.numpy(), faces.numpy(), 3, handle_idx.numpy(), arap_data_igl
-        )
-    with profile_block(f"igl_arap_solve_{arap_data_igl.max_iter}_steps"):
-        arap_deformed_igl = igl.arap_solve(
-            handles.detach().numpy(), arap_data_igl, verts.detach().numpy()
-        )
+    igl.arap_precomputation(
+        verts.cpu().numpy(),
+        faces.cpu().numpy(),
+        3,
+        handle_idx.cpu().numpy(),
+        arap_data_igl,
+    )
     print("Solved with libigl.")
-
-    # global_profiler.dump()
-    # global_profiler.summary_to_json()
-    # with Path(results_dir, "profile.json").open("w") as f:
-    #     f.write(json.dumps(global_profiler.summary_to_json(), indent=2))
-    # global_profiler.dump(path=Path(results_dir, "profile"))
 
     try:
         import polyscope as ps
 
         ps.init()
         ps.set_ground_plane_mode("shadow_only")
-        ps.register_surface_mesh("mesh", verts, faces.numpy(), enabled=False)
+        ps.register_surface_mesh(
+            "mesh", verts.cpu().numpy(), faces.cpu().numpy(), enabled=False
+        )
         ps_mesh = ps.register_surface_mesh(
-            "deformed", deformed.detach().numpy(), faces.numpy()
+            "deformed", deformed.detach().cpu().numpy(), faces.cpu().numpy()
         )
         ps_target_markers = ps.register_point_cloud(
-            "target", target_markers_verts.detach().numpy(), enabled=True
-        )
-        ps_mesh_arap = ps.register_surface_mesh(
-            "arap_deformed", arap_deformed_igl, faces.numpy(), enabled=False
+            "target", target_markers_verts.detach().cpu().numpy(), enabled=True
         )
         ps_edges = ps.register_curve_network(
             "edges",
-            deformed.detach().numpy(),
-            vert_vert.numpy(),
+            deformed.detach().cpu().numpy(),
+            vert_vert.cpu().numpy(),
             enabled=False,
             radius=0.01,
         )
         ps_mesh.add_scalar_quantity(
-            "face_area", mesh.geom.face_areas.numpy(), defined_on="faces"
+            "face_area", mesh.geom.face_areas.cpu().numpy(), defined_on="faces"
         )
-        ps_cloud = ps.register_point_cloud("bc", handles.detach().numpy(), enabled=True)
+        ps_cloud = ps.register_point_cloud(
+            "bc", handles.detach().cpu().numpy(), enabled=True
+        )
         ps_mesh.add_scalar_quantity(
-            "energy", energy.detach().numpy(), defined_on="vertices", enabled=True
+            "energy", energy.detach().cpu().numpy(), defined_on="vertices", enabled=True
         )
         assert handles.grad is not None
         ps_cloud.add_vector_quantity(
-            "-grad bc", -handles.grad, enabled=True, length=0.15
+            "-grad bc", -handles.grad.cpu(), enabled=True, length=0.15
         )
-        ps_edges.add_scalar_quantity("cotan", vert_vert_weights, defined_on="edges")
+        ps_edges.add_scalar_quantity(
+            "cotan", vert_vert_weights.cpu(), defined_on="edges"
+        )
 
         optimizing = False
         optim_step = 0
@@ -156,6 +152,7 @@ def main(
                         handles,
                         lap_factors,
                         fwd_max_iter=arap_steps,
+                        bwd_max_iter=500,
                     )
                     print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
                     loss = ((deformed[marker_idx] - target_markers_verts) ** 2).mean()
@@ -173,9 +170,11 @@ def main(
 
                 with torch.no_grad():
                     print(f"Step {optim_step}.")
-                    ps_cloud.update_point_positions(handles.detach().numpy())
+                    ps_cloud.update_point_positions(handles.detach().cpu().numpy())
                     arap_deformed_igl = igl.arap_solve(
-                        handles.detach().numpy(), arap_data_igl, verts.detach().numpy()
+                        handles.detach().cpu().numpy(),
+                        arap_data_igl,
+                        verts.detach().cpu().numpy(),
                     )
                     igl.writeOBJ(
                         str(out_path / f"step_{optim_step}.obj"),
@@ -187,11 +186,10 @@ def main(
                         handles.detach().cpu().numpy(),
                         np.empty([0, 3]),
                     )
-                    ps_mesh.update_vertex_positions(deformed.detach().numpy())
-                    ps_mesh_arap.update_vertex_positions(arap_deformed_igl)
+                    ps_mesh.update_vertex_positions(deformed.detach().cpu().numpy())
                     ps_mesh.add_scalar_quantity(
                         "energy",
-                        energy.detach().numpy(),
+                        energy.detach().cpu().numpy(),
                         defined_on="vertices",
                         enabled=True,
                     )
@@ -214,18 +212,16 @@ if __name__ == "__main__":
         ~/Dropbox\ \(MIT\)/Data/iskra-data/arap/amass/amas_32_markers.obj \
         --steps 10
     """
-    print(f"Default num_threads: {torch.get_num_threads()}")
-    torch.set_num_threads(32)
-    torch.set_printoptions(linewidth=200, sci_mode=False)
+    print(f"torch.num_threads: {torch.get_num_threads()}")
 
     parser = ArgumentParser(description="Demonstrates ARAP.")
     parser.add_argument("mesh_path", type=Path, help="Source mesh path.")
     parser.add_argument("handles_path", type=Path, help="Handle indices path.")
     parser.add_argument("markers_path", type=Path, help="Mocap markers path.")
     parser.add_argument("target_markers_path", type=Path, help="Target markers path.")
-    parser.add_argument("--lr", default=5.0, type=float, help="Learning rate.")
+    parser.add_argument("--lr", default=3, type=float, help="Learning rate.")
     parser.add_argument(
-        "--arap_steps", default=100, type=int, help="Num. steps for ARAP."
+        "--arap_steps", default=250, type=int, help="Num. steps for ARAP."
     )
     parser.add_argument(
         "--steps", default=250, type=int, help="Num. steps for outer loop."
