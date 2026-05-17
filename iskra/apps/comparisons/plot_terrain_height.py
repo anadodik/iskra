@@ -17,7 +17,6 @@ from networkx import center
 
 import iskra.sparse as sp
 from iskra import dec
-from iskra.adjoint import make_solver_layer
 from iskra.fem import grad, grad_to_div
 from iskra.geometry.volume import triangle_areas
 from iskra.mesh import Mesh

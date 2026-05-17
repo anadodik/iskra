@@ -12,7 +12,7 @@ torch.set_num_threads(16)
 torch.set_num_interop_threads(16)
 
 import iskra.sparse as sp
-from iskra.adjoint import compute_numerical_jacobian, make_solver_layer
+from iskra.adjoint import make_fixed_point_layer
 from iskra.dec import laplacian
 from iskra.fem import grad, grad_to_div
 from iskra.geometry import triangle_areas
@@ -119,7 +119,7 @@ def rdg_solve(
     div_unknown = div_unknown.to_sparse_csr()
     chol = CholmodSolver(lap_unknown)
 
-    solver = make_solver_layer(
+    solver = make_fixed_point_layer(
         partial(rdg_step, alphak=alphak, lap_solver=chol),
         [(0, 0), (1, 1), (8, 3)],
         (2, 3, 4, 5, 6, 7),

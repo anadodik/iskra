@@ -25,7 +25,7 @@ from networkx import center
 
 import iskra.sparse as sp
 from iskra import dec
-from iskra.adjoint import make_solver_layer
+from iskra.adjoint import make_fixed_point_layer
 from iskra.fem import grad, grad_to_div
 from iskra.geometry.volume import triangle_areas
 from iskra.mesh import Mesh
@@ -193,7 +193,7 @@ def iskra_forward(
         global gmres_init
         gmres_init = sol
 
-    geodesic_layer = make_solver_layer(
+    geodesic_layer = make_fixed_point_layer(
         partial(rdg_step, lap_solver=solver),
         [(0, 0), (1, 1), (8, 3)],
         (2, 3, 4, 5, 6, 7),

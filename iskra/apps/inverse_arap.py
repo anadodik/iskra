@@ -73,11 +73,15 @@ def main(
     arap_data_igl.max_iter = 100
     with profile_block("igl_arap_precomp"):
         igl.arap_precomputation(
-            verts.numpy(), faces.numpy(), 3, handle_idx.numpy(), arap_data_igl
+            verts.cpu().numpy(),
+            faces.cpu().numpy(),
+            3,
+            handle_idx.cpu().numpy(),
+            arap_data_igl,
         )
     with profile_block(f"igl_arap_solve_{arap_data_igl.max_iter}_steps"):
         arap_deformed_igl = igl.arap_solve(
-            handles.detach().numpy(), arap_data_igl, verts.detach().numpy()
+            handles.detach().cpu().numpy(), arap_data_igl, verts.detach().cpu().numpy()
         )
     print("Solved with libigl.")
 
@@ -90,37 +94,45 @@ def main(
     try:
         import polyscope as ps
 
+        ps.set_allow_headless_backends(True)
         ps.init()
+
         ps.set_ground_plane_mode("shadow_only")
-        ps.register_surface_mesh("mesh", verts, faces.numpy(), enabled=False)
-        ps_mesh = ps.register_surface_mesh(
-            "deformed", deformed.detach().numpy(), faces.numpy()
+        ps.register_surface_mesh(
+            "mesh", verts.cpu().numpy(), faces.cpu().numpy(), enabled=False
         )
-        ps_target_mesh = ps.register_surface_mesh(
-            "target", target_verts.detach().numpy(), faces.numpy()
+        ps_mesh = ps.register_surface_mesh(
+            "deformed", deformed.detach().cpu().numpy(), faces.cpu().numpy()
+        )
+        _ = ps.register_surface_mesh(
+            "target", target_verts.detach().cpu().numpy(), faces.cpu().numpy()
         )
         ps_mesh_arap = ps.register_surface_mesh(
-            "arap_deformed", arap_deformed_igl, faces.numpy(), enabled=False
+            "arap_deformed", arap_deformed_igl, faces.cpu().numpy(), enabled=False
         )
         ps_edges = ps.register_curve_network(
             "edges",
-            deformed.detach().numpy(),
-            vert_vert.numpy(),
+            deformed.detach().cpu().numpy(),
+            vert_vert.cpu().numpy(),
             enabled=False,
             radius=0.01,
         )
         ps_mesh.add_scalar_quantity(
-            "face_area", mesh.geom.face_areas.numpy(), defined_on="faces"
+            "face_area", mesh.geom.face_areas.cpu().numpy(), defined_on="faces"
         )
-        ps_cloud = ps.register_point_cloud("bc", handles.detach().numpy(), enabled=True)
+        ps_cloud = ps.register_point_cloud(
+            "bc", handles.detach().cpu().numpy(), enabled=True
+        )
         ps_mesh.add_scalar_quantity(
-            "energy", energy.detach().numpy(), defined_on="vertices", enabled=True
+            "energy", energy.detach().cpu().numpy(), defined_on="vertices", enabled=True
         )
         assert handles.grad is not None
         ps_cloud.add_vector_quantity(
-            "-grad bc", -handles.grad, enabled=True, length=0.15
+            "-grad bc", -handles.grad.cpu().numpy(), enabled=True, length=0.15
         )
-        ps_edges.add_scalar_quantity("cotan", vert_vert_weights, defined_on="edges")
+        ps_edges.add_scalar_quantity(
+            "cotan", vert_vert_weights.cpu().numpy(), defined_on="edges"
+        )
 
         optimizing = False
         optim_step = 0
@@ -152,6 +164,7 @@ def main(
                         lap,
                         lap_factors,
                         fwd_max_iter=arap_steps,
+                        verbose=True,
                     )
                     print(f"ARAP energy: {energy.mean().detach().cpu().item()}")
                     loss = ((deformed - target_verts) ** 2).mean()
@@ -169,9 +182,11 @@ def main(
 
                 with torch.no_grad():
                     print(f"Step {optim_step}.")
-                    ps_cloud.update_point_positions(handles.detach().numpy())
+                    ps_cloud.update_point_positions(handles.detach().cpu().numpy())
                     arap_deformed_igl = igl.arap_solve(
-                        handles.detach().numpy(), arap_data_igl, verts.detach().numpy()
+                        handles.detach().cpu().numpy(),
+                        arap_data_igl,
+                        verts.detach().cpu().numpy(),
                     )
                     igl.writeOBJ(
                         str(out_path / f"step_{optim_step}.obj"),
@@ -183,11 +198,11 @@ def main(
                         handles.detach().cpu().numpy(),
                         np.empty([0, 3]),
                     )
-                    ps_mesh.update_vertex_positions(deformed.detach().numpy())
+                    ps_mesh.update_vertex_positions(deformed.detach().cpu().numpy())
                     ps_mesh_arap.update_vertex_positions(arap_deformed_igl)
                     ps_mesh.add_scalar_quantity(
                         "energy",
-                        energy.detach().numpy(),
+                        energy.detach().cpu().numpy(),
                         defined_on="vertices",
                         enabled=True,
                     )

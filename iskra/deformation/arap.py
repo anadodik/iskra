@@ -13,7 +13,7 @@ import torch
 
 import iskra.sparse as sp
 import iskra.sparse_linalg as spla
-from iskra.adjoint import make_solver_layer
+from iskra.adjoint import make_fixed_point_layer
 from iskra.dec import d_01, d_10, laplacian, laplacian_from_weights
 from iskra.geometry import cotan_weights
 from iskra.logging.logging import getLogger
@@ -153,25 +153,34 @@ def arap_solve(
     lap_factors: spla.SolverT | None = None,
     fwd_max_iter: int = 1000,
     compute_fwd_energy: bool = False,
+    fwd_error_metric: Literal["delta", "energy"] = "delta",
     fwd_error_ord: int | float | Literal["fro", "nuc"] = 2,
     fwd_abs_tol: float = 1e-7,
     fwd_rel_tol: float = 1e-4,
-    bwd_max_iter: int = 200,
+    bwd_max_iter: int = 1000,
     bwd_abs_tol: float = 1e-7,
     bwd_rel_tol: float = 1e-4,
     verbose: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # TODO: fix `profile_fn` not type-checking correctly
+    # TODO: separate into two different functions, with energy and without
     if handle_idx.numel() < 4:
         LOGGER.warning(
             "ARAP gradients may be incorrect with fewer than 4 boundary conditions."
         )
     arap_fn = arap_step
-    fwd_error_metric = "delta"
     if compute_fwd_energy:
         arap_fn = arap_step_with_energy
-        fwd_error_metric = 1
-    solver = make_solver_layer(
+        if fwd_error_metric == "energy":
+            fwd_error_metric: int | Literal["delta"]
+            fwd_error_metric = 1
+    if not compute_fwd_energy and fwd_error_metric == "energy":
+        raise ValueError(
+            "Asking to use ARAP energy to test for convergence, "
+            "but also asking to not compute the energy: "
+            'fwd_error_metric must be "delta" when compute_fwd_energy=False.'
+        )
+    solver = make_fixed_point_layer(
         partial(arap_fn, solver=lap_factors),
         [(0, 0)],
         (1, 2, 4, 6),

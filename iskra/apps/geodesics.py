@@ -6,7 +6,7 @@ from functools import partial
 import torch
 
 import iskra.sparse as sp
-from iskra.adjoint import compute_numerical_jacobian, make_solver_layer
+from iskra.adjoint import compute_numerical_jacobian, make_fixed_point_layer
 from iskra.dec import laplacian
 from iskra.fem import grad
 from iskra.geometry import triangle_areas
@@ -64,7 +64,7 @@ def rdg_solve(
 
     alpha = alpha_hat * torch.sqrt(torch.sum(vert_areas))
     rho = 2 * torch.sqrt(torch.sum(vert_areas))
-    solver = make_solver_layer(
+    solver = make_fixed_point_layer(
         partial(rdg_step, alphak=alphak),
         [(0, 0), (1, 1)],
         (2, 3, 4, 5, 6, 7),

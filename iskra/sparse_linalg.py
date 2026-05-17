@@ -444,20 +444,23 @@ def gmres_solve(
     preconditioner: Callable[[torch.Tensor], torch.Tensor] | None = None,
     verbose: bool = False,
 ) -> torch.Tensor:
-    """Matrix-free GMRES solver for (I - J^T) u = b.
+    """Matrix-free GMRES solver for J^T u = b.
 
     Arguments:
-        f (Callable[[Tensor], Tensor]): Computes J^T @ z  (vector-Jacobian product)
+        f (Callable[[Tensor], Tensor]): Function which computes
+            J^T @ z (e.g., a vector-Jacobian product).
         b (Tensor): Right-hand side of linear system, same shape as u.
         init (Tensor): Initial guess for u.
         max_iter (int): Maximum number of iterations for the solver.
         abs_tol (float): Absolute tolerance the solver needs to reach before exiting.
         rel_tol (float): Relative tolerance the solver needs to reach before exiting.
-        preconditioner (Optional[Callable]): Optionally applies preconditioner.
+        preconditioner (Optional[Callable]): Function representing M^-1.
+            If provided, the solver solves the left-preconditioned system
+            M^-1 A u = M^-1 b.
         verbose (bool): Whether to print logging information.
 
     Returns:
-        (torch.Tensor): Solution to the linear system (I - J^T) u = b.
+        (torch.Tensor): Solution to the linear system, u.
     """
     if verbose:
         LOGGER.setLevel("INFO")
@@ -533,7 +536,7 @@ def gmres_solve(
                 if initial_res_norm > 0
                 else 0.0
             )
-            LOGGER.info(
+            LOGGER.debug(
                 f"GMRES residuals: res={abs_val:.3e}, "
                 f"(tol={abs_tol + rel_tol * initial_res_norm:.3e}), "
                 f"res_rel={rel_val:.3e} (rel_tol={rel_tol:.3e})."
@@ -563,8 +566,6 @@ def gmres_solve(
         ]
 
     correction = krylov_basis[:, : k + 1] @ y
-    if preconditioner is not None:
-        correction = preconditioner(correction.reshape(shape)).flatten()
 
     x_flat = init_flat + correction
     return x_flat.reshape(shape)
@@ -909,7 +910,8 @@ class Eigsh(torch.autograd.Function):
                     grad_evecs,
                     init,
                     max_iter=ctx.bwd_max_iter,
-                    tol=ctx.bwd_eps,
+                    abs_tol=ctx.bwd_eps,
+                    rel_tol=0,
                 )
 
                 grad_a = vjp_a(u)[0]

@@ -24,7 +24,7 @@ import theseus as th
 
 import iskra.sparse as sp
 import iskra.sparse_linalg as spla
-from iskra.adjoint import make_solver_layer
+from iskra.adjoint import make_fixed_point_layer
 from iskra.dec import d_01, d_10, laplacian, laplacian_from_weights
 from iskra.geometry import cotan_weights
 from iskra.logging.logging import getLogger
@@ -269,7 +269,7 @@ def arap_solve(
     eps: float = 1e-5,
     verbose: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    solver = make_solver_layer(
+    solver = make_fixed_point_layer(
         partial(arap_step, solver=lap_factors),
         [(0, 0)],
         (1, 2, 4, 6),

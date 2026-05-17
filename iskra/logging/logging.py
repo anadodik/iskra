@@ -12,4 +12,5 @@ def getLogger(name: str) -> logging.Logger:  # noqa: N802
     formatter = logging.Formatter(format_str)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
     return logger

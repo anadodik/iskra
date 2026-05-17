@@ -9,7 +9,6 @@ import numpy as np
 import torch
 
 import iskra.sparse as sp
-from iskra.adjoint import make_solver_layer
 from iskra.dec import d_01, d_10, laplacian
 from iskra.deformation import arap_precompute, arap_solve
 from iskra.geometry import cotan_weights

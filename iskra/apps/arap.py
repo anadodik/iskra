@@ -2,7 +2,6 @@
 
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import Literal
 
 import igl
 import torch
@@ -81,9 +80,9 @@ def main(
 
     num_grad = None
     num_jac = compute_numerical_jacobian(
-        arap_solve,
+        lambda *args, **kwargs: arap_solve(*args, **kwargs)[0],
         0,
-        -1,
+        2,
         1e-8,
         verts,
         bc_idx,
