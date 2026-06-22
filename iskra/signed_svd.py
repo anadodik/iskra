@@ -310,4 +310,18 @@ polar_3x3: Callable[[torch.Tensor], tuple[torch.Tensor, torch.Tensor]] = Polar3x
 
 
 def closest_rot_3x3(x: torch.Tensor) -> torch.Tensor:
+    """Computes the closest rotation matrix to an arbitrary 3x3 matrix.
+
+    !!! warning:
+        The function is LLM generated based on the write-up by Julian Panetta:
+        https://julianpanetta.com/pdf/notes/PolarDecomposition.pdf
+        While it has worked in limited practical tests,
+        it still needs to be hand-validated and tested.
+
+    Args:
+        x (Tensor[Float, [Bs, 3, 3]]): A batched 3x3 matrix.
+
+    Returns:
+        Tensor[Float, [Bs, 3, 3]]: Closest rotation matrix.
+    """
     return polar_3x3(x)[0]

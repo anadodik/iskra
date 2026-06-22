@@ -1,6 +1,6 @@
-# `iskra ✨`: Modern Geometry Processing
+![iska title image](logo.svg)
 
-![iska title image](logo.webp)
+# `iskra` ✨ Modern Geometry Processing
 
 `iskra ✨` is a modern, Python-first, CPU or GPU, differentiable library for all of your geometry process needs.
 
@@ -13,7 +13,6 @@ It's key features are:
 - **Learning-ready**:
 - **Simple by default, powerful when needed**: 
 - **Didactic**: Designed to be easy to use and learn.
-- **Complete**: for example, we are on pair in functionality with geometry processing powerhouses such as `libigl` and `gptoolbox`, 
 - **Tested**: 
 - **Actively maintained**: 
 

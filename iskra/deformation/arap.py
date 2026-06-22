@@ -169,11 +169,11 @@ def arap_solve(
             "ARAP gradients may be incorrect with fewer than 4 boundary conditions."
         )
     arap_fn = arap_step
+    fwd_error_metric_solver: int | Literal["delta"] = "delta"
     if compute_fwd_energy:
         arap_fn = arap_step_with_energy
         if fwd_error_metric == "energy":
-            fwd_error_metric: int | Literal["delta"]
-            fwd_error_metric = 1
+            fwd_error_metric_solver = 1
     if not compute_fwd_energy and fwd_error_metric == "energy":
         raise ValueError(
             "Asking to use ARAP energy to test for convergence, "
@@ -186,7 +186,7 @@ def arap_solve(
         (1, 2, 4, 6),
         fwd_method="fixed-point",
         fwd_max_iter=fwd_max_iter,
-        fwd_error_metric=fwd_error_metric,
+        fwd_error_metric=fwd_error_metric_solver,
         fwd_error_ord=fwd_error_ord,
         fwd_abs_tol=fwd_abs_tol,
         fwd_rel_tol=fwd_rel_tol,

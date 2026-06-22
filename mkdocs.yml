@@ -22,7 +22,7 @@ plugins:
           separate_signature: true
           unwrap_annotated: true
           filters:
-          - '!^_'
+            - "!^_"
           merge_init_into_class: true
           docstring_section_style: table
           signature_crossrefs: true
@@ -32,8 +32,8 @@ plugins:
           annotations_path: brief
           show_signature_annotations: true
           show_source: false
-        import: 
-        - https://docs.python-requests.org/en/master/objects.inv
+        inventories:
+          - https://docs.python-requests.org/en/master/objects.inv
 
 markdown_extensions:
   - admonition
@@ -42,12 +42,13 @@ markdown_extensions:
 
 nav:
   - iskra ✨: index.md
-  - Reference: 
-    - reference/index.md
-    - reference/topology.md
-    - reference/geometry.md
-    - reference/directional.md
-    - reference/operators.md
+  - Reference:
+      - reference/index.md
+      - reference/topology.md
+      - reference/geometry.md
+      - reference/directional.md
+      - reference/operators.md
+      - reference/sparse.md
   - About: about.md
 
 theme:

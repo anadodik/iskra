@@ -75,10 +75,12 @@ def soft_edge_project(
     origin = edges[..., 0, :]
     edge_vectors = edges[..., 1, :] - edges[..., 0, :]
     length = torch.linalg.vector_norm(edge_vectors, dim=-1, keepdim=True)
-    edge_vectors = edge_vectors / length
+    edge_vectors = edge_vectors / (length + 1e-12)
 
-    t = torch.linalg.vecdot((x - origin) / length, edge_vectors)
-    t = torch.clamp(t, sigma / length[..., 0], 1 - sigma / length[..., 0])
+    t = torch.linalg.vecdot((x - origin) / (length + 1e-12), edge_vectors)
+    t = torch.clamp(
+        t, sigma / (length[..., 0] + 1e-12), 1 - sigma / (length[..., 0] + 1e-12)
+    )
     # t = soft_clamp(t, sigma / length[..., 0])
     bary = torch.stack([1 - t, t], -1)
     return barycentric_interpolate(edges, bary)

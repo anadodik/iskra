@@ -413,12 +413,12 @@ def make_fixed_point_layer[T, **P](
 
             with profile_block("bwd_optim"):
                 system_fn = lambda z: vjp_iterate(z) - z  # noqa: E731
-                if verbose:
-                    spec_init = torch.randn_like(grad_iterate)
-                    spectral = estimate_spectral_radius(
-                        lambda z: vjp_iterate(z), spec_init, 10_000
-                    )
-                    LOGGER.info(f"Spectral radius of df/dy: {spectral}")
+                # if verbose:
+                #     spec_init = torch.randn_like(grad_iterate)
+                #     spectral = estimate_spectral_radius(
+                #         lambda z: vjp_iterate(z), spec_init, 10_000
+                #     )
+                #     LOGGER.info(f"Spectral radius of df/dy: {spectral}")
                 preconditioner = None
                 # preconditioner = build_sampled_diagonal_preconditioner(
                 #     system_fn, init.shape, init.device, init.dtype
@@ -506,7 +506,7 @@ def compute_jacobian[T, **P](
     out_idx: int = 0,
     *args: P.args,
     **kwargs: P.kwargs,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     args_list: list[Any] = list(args)
     arg: torch.Tensor = args[in_idx]
     if not isinstance(arg, torch.Tensor):

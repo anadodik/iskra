@@ -1,4 +1,5 @@
 import random
+from functools import partial
 
 import pytest
 import torch
@@ -47,9 +48,4 @@ def test_function_gradients(device, requires_grad):
     assert True
 
 
-def test_function_determinism(rng_tensor):
-    assert True
-
-
-def test_function_device(device):
-    assert True
+assert_equal = partial(torch.testing.assert_close, rtol=0, atol=0)

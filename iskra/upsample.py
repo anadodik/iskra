@@ -2,6 +2,7 @@
 
 import torch
 
+import iskra.sparse as sp
 from iskra.logging import getLogger
 
 LOGGER = getLogger(__name__)
@@ -64,7 +65,7 @@ def upsample(
 
     ii = torch.arange(faces_sub.shape[0], device=device)
     jj = torch.cat(len(face_list) * [torch.arange(faces.shape[0], device=device)])
-    face_to_face_sub = torch.sparse_coo_tensor(
+    face_to_face_sub = sp.coo_tensor(
         torch.stack([ii, jj]),
         torch.ones(faces_sub.shape[0], device=device),
         size=[faces_sub.shape[0], faces.shape[0]],

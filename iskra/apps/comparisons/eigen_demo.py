@@ -130,7 +130,7 @@ def vertex_area_matrix(
     idcs_j = torch.cat([bdr_edges_bwd + n_vertices, bdr_edges], -2).flatten(-2, -1)
     values = torch.tensor([0.25, -0.25], device=faces.device, dtype=dtype)
     values = values[None, :].expand(2 * n_bdr_edges, -1).flatten(-2, -1)
-    return torch.sparse_coo_tensor(
+    return sp.coo_tensor(
         torch.stack([idcs_i, idcs_j], -2), values, size=[2 * n_vertices, 2 * n_vertices]
     )
 
@@ -148,9 +148,7 @@ def build_conformal_laplacian(verts: torch.Tensor, faces: torch.Tensor):
     bdr_idx = boundary(faces).flatten().unique()
     bdr_ii = torch.stack([bdr_idx, bdr_idx], 0)
     bdr_val = torch.ones(bdr_ii.shape[1], dtype=dtype, device=device)
-    boundary_mat_block = torch.sparse_coo_tensor(
-        bdr_ii, bdr_val, size=[n_verts, n_verts]
-    )
+    boundary_mat_block = sp.coo_tensor(bdr_ii, bdr_val, size=[n_verts, n_verts])
     boundary_mat = sp.repdiag(boundary_mat_block, 2)
     return lap, boundary_mat
 
@@ -166,7 +164,7 @@ def construct_graph_laplacian(dtype, device) -> tuple[torch.Tensor, torch.Tensor
     graph.add_nodes_from(range(n))
 
     lap = nx.laplacian_matrix(graph)
-    lap = sp.scipy_to_torch(lap).to_sparse_coo().to(dtype=dtype)
+    lap = sp.from_scipy(lap).to_sparse_coo().to(dtype=dtype)
     lap = lap + 1e-2 * sp.eye(n)
 
     n = graph.number_of_nodes()

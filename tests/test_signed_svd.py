@@ -63,6 +63,7 @@ def mat(request):
     ],
 )
 def test_signed_svd_gradients(mat, loss_fn):
+    # Compares manual signed SVD implementation and its gradients with torch.svd.
     u_torch, s_torch, vh_torch, grad_torch = run_svd(torch.svd, loss_fn, mat)
     u_signed, s_signed, vh_signed, grad_signed = run_svd(signed_svd, loss_fn, mat)
     assert (torch.det(u_signed @ vh_signed) > 0).all()

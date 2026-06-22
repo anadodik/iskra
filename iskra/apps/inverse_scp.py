@@ -5,10 +5,10 @@ from argparse import ArgumentParser
 import numpy as np
 import torch
 
+import iskra.sparse as sp
 from iskra.dec import laplacian
 from iskra.geometry import triangle_areas, triangle_coordinate_system
 from iskra.mesh import Mesh
-from iskra.sparse import diag, repdiag, torch_to_scipy
 from iskra.sparse_linalg import default_solver, eigsh
 from iskra.topology import boundary, face_index, get_subfaces
 
@@ -55,7 +55,7 @@ def vertex_area_matrix(
     idcs_j = torch.cat([bdr_edges_bwd + n_vertices, bdr_edges], -2).flatten(-2, -1)
     values = torch.tensor([0.25, -0.25], device=faces.device, dtype=dtype)
     values = values[None, :].expand(2 * n_bdr_edges, -1).flatten(-2, -1)
-    return torch.sparse_coo_tensor(
+    return sp.coo_tensor(
         torch.stack([idcs_i, idcs_j], -2), values, size=[2 * n_vertices, 2 * n_vertices]
     )
 
@@ -77,15 +77,13 @@ if __name__ == "__main__":
     vertex_area = vertex_area_matrix(mesh.n_vertices, mesh.faces, dtype=dtype)
     bdr_ii = torch.stack([bdr_idx, bdr_idx], 0)
     bdr_val = torch.ones(bdr_ii.shape[1], dtype=dtype, device=device)
-    rhs_block = torch.sparse_coo_tensor(
-        bdr_ii, bdr_val, size=[mesh.n_vertices, mesh.n_vertices]
-    )
-    rhs = repdiag(rhs_block, 2)
+    rhs_block = sp.coo_tensor(bdr_ii, bdr_val, size=[mesh.n_vertices, mesh.n_vertices])
+    rhs = sp.repdiag(rhs_block, 2)
 
     def compute_scp(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
         lap, _ = laplacian(verts, faces, clamp_min=1e-8)
-        lhs = repdiag(lap, 2) - 2 * vertex_area
-        evals, evecs = eigsh(lhs, M=rhs, k=4, sigma=-1e-12, adjoint="individual")
+        lhs = sp.repdiag(lap, 2) - 2 * vertex_area
+        evals, evecs = eigsh(lhs, M=rhs, k=4, sigma=-1e-12, bwd_method="individual")
         print(f"Difference between eigenvalues: {evals[2] - evals[3]}")
         uv_opt = evecs[:, 2:3].reshape(2, -1).mT
         return uv_opt

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
-import builtins
 import ast
+import builtins
 import ctypes
 import dataclasses
 import importlib
@@ -35,6 +35,8 @@ from typing import (
 )
 
 import torch
+
+import iskra.sparse as sp
 
 if sys.version_info >= (3, 11):
     from typing import TypeVarTuple, Unpack
@@ -361,4 +363,4 @@ mat_0_vals = torch.full([mat_idcs.shape[1]], 2.0)
 mat_1_vals = torch.full([mat_idcs.shape[1]], 3.0)
 tensor_vals = torch.cat([mat_0_vals, mat_1_vals])
 print(tensor_idcs)
-print(torch.sparse_coo_tensor(tensor_idcs, tensor_vals))
+print(sp.coo_tensor(tensor_idcs, tensor_vals))

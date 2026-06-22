@@ -148,8 +148,8 @@ def edge_project(x: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
     edge_vectors = edge_vectors / (length + 1e-12)
 
     t = torch.linalg.vecdot((x - origin) / (length + 1e-12), edge_vectors)
+    t = torch.clamp(t, min=0, max=1)
     bary = torch.stack([1 - t, t], -1)
-    bary = torch.clamp(bary, min=0, max=1)
     return barycentric_interpolate(edges, bary)
 
 

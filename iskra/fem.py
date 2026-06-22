@@ -90,9 +90,9 @@ def grad_triangle_3d(
     idx = torch.stack([idx_i, idx_j])
     values = torch.cat([rot_edge_20, -rot_edge_20, rot_edge_01, -rot_edge_01])
 
-    grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
-    grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
-    grad_z = torch.sparse_coo_tensor(idx, values[:, 2], size=[n_faces, n_vertices])
+    grad_x = sp.coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
+    grad_y = sp.coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
+    grad_z = sp.coo_tensor(idx, values[:, 2], size=[n_faces, n_vertices])
     return grad_x.coalesce(), grad_y.coalesce(), grad_z.coalesce()
 
 
@@ -148,8 +148,8 @@ def grad_triangle_2d(
     idx = torch.stack([idx_i, idx_j])
     values = torch.cat([rot_edge_13, -rot_edge_13, rot_edge_21, -rot_edge_21])
 
-    grad_x = torch.sparse_coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
-    grad_y = torch.sparse_coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
+    grad_x = sp.coo_tensor(idx, values[:, 0], size=[n_faces, n_vertices])
+    grad_y = sp.coo_tensor(idx, values[:, 1], size=[n_faces, n_vertices])
 
     return grad_x.coalesce(), grad_y.coalesce()
 
@@ -190,7 +190,7 @@ def grad_edges(vertices: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
 
     values = torch.cat([-inv_len, inv_len])
 
-    grad = torch.sparse_coo_tensor(idx, values, size=[n_faces, n_vertices])
+    grad = sp.coo_tensor(idx, values, size=[n_faces, n_vertices])
 
     return grad
 

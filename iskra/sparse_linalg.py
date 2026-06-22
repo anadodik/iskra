@@ -43,16 +43,16 @@ class CholmodSolver:
         with profile_block("solver_init"):
             if analyze_only:
                 self.solver = cholmod.analyze(
-                    sp.torch_to_scipy(mat), mode=mode, ordering_method=ordering_method
+                    sp.to_scipy(mat), mode=mode, ordering_method=ordering_method
                 )
             else:
                 self.solver = cholmod.cholesky(
-                    sp.torch_to_scipy(mat), mode=mode, ordering_method=ordering_method
+                    sp.to_scipy(mat), mode=mode, ordering_method=ordering_method
                 )
 
     @profile_fn(name="refactor_numeric")
     def refactor_numeric(self, mat: torch.Tensor):
-        mat_sp = sp.torch_to_scipy(mat).tocsc()
+        mat_sp = sp.to_scipy(mat).tocsc()
         self.solver.cholesky_inplace(mat_sp)
 
     def __call__(self, b: torch.Tensor):
@@ -71,9 +71,10 @@ class CUDSSSolver:
             self.mat_csr = mat.to_sparse_csr()
 
             self.options = self.new_default_options()
-
             self.solver = nvsparse.DirectSolver(
-                self.mat_csr, self.dummy_b, options=self.options
+                self.mat_csr.torch_tensor(),
+                self.dummy_b,
+                options=self.options,
             )
             self.solver.plan()
 
@@ -107,12 +108,14 @@ class CUDSSSolver:
             self.mat_csr = self.mat_csr.clone()
             self.solver.free()
             self.solver = nvsparse.DirectSolver(
-                self.mat_csr, self.dummy_b, options=self.options
+                self.mat_csr.torch_tensor(),
+                self.dummy_b,
+                options=self.options,
             )
             self.solver.plan()
             self.solver.factorize()
         else:
-            self.solver.reset_operands(None, b_reshaped)
+            self.solver.reset_operands(b=b_reshaped)
         x: torch.Tensor = self.solver.solve()
         torch.cuda.default_stream().synchronize()
         if b.ndim > 1 and b.shape[-1] == 1:
@@ -162,7 +165,7 @@ def default_solver(
                 solver.solve(b, x)
                 return x
     else:
-        solver = scipy.sparse.linalg.splu(sp.torch_to_scipy(mat.detach().cpu()))
+        solver = scipy.sparse.linalg.splu(sp.to_scipy(mat.detach().cpu()))
 
         def _solve_fn(b: torch.Tensor) -> torch.Tensor:
             b_np = b.detach().cpu().numpy()
@@ -223,7 +226,7 @@ class LinearFactorAndSolve(torch.autograd.Function):
             grad_vals = -dg_dx[rows, ...] * x[cols, ...]
             if grad_vals.ndim == 2:
                 grad_vals = grad_vals.sum(-1)
-            mat_grad = torch.sparse_coo_tensor(mat.indices(), grad_vals, [n, n])
+            mat_grad = sp.coo_tensor(mat.indices(), grad_vals, [n, n])
 
         if ctx.needs_input_grad[1]:
             b_grad = dg_dx.clone()
@@ -297,11 +300,11 @@ def power_iteration(
     solver: SolverT | None = None,
 ) -> torch.Tensor:
     if sigma is not None:
-        evecs = linear_solve(a - sigma * m, torch.sparse.mm(m, x), solver)[1]
+        evecs = linear_solve(a - sigma * m, sp.matmul(m, x), solver)[1]
     else:
-        evecs = torch.sparse.mm(a, x)
+        evecs = sp.matmul(a, x)
     evecs = torch.linalg.qr(evecs)[0]
-    m_evecs = torch.sparse.mm(a, evecs)
+    m_evecs = sp.matmul(a, evecs)
     # evecs = evecs / torch.sqrt((evecs.conj() * m_evecs).sum(dim=0, keepdim=True).real)
     dot = (x.conj() * m_evecs).sum(dim=0, keepdim=True).real
     signs = 2 * (dot > 0).int() - 1
@@ -736,24 +739,27 @@ def cg_solve(
 def estimate_spectral_radius(
     f: Callable[[torch.Tensor], torch.Tensor], init: torch.Tensor, maxiter: int
 ) -> torch.Tensor:
-    """Estimate spectral radius (max |evals|) of matrix J (given as callable f).
+    """Estimate spectral radius (max |evals|) of matrix J^T (given as callable f).
 
-    Uses the power method J^T J, via J^T(J v).
+    Uses the power method to compute the spectral radius of J^T. Can be useful for
+    debugging the inverse of vector-Jacobian products.
 
     Args:
-        f (Callable[[torch.Tensor], torch.Tensor]): Function that computes J @ v.
+        f (Callable[[torch.Tensor], torch.Tensor]): Function that computes v @ J.
         init (torch.Tensor): Initial guess for largest eigenvector.
         maxiter (int): Maximum number of iterations for the solver.
 
     Returns:
         torch.Tensor: Spectral radius, i.e., the maximum absolute eigenvalue.
     """
-    v = init / init.norm()
+    v = init / (init.norm() + 1e-12)
+
     for _ in range(maxiter):
-        w = f(f(v))
-        v = w / (w.norm() + 1e-30)
-    w = f(f(v))
-    rho_est = torch.sqrt((v * w).sum().abs())
+        w = f(v)
+        v = w / (w.norm() + 1e-12)
+
+    w = f(v)
+    rho_est = (v * w).sum().abs()
     return rho_est
 
 
@@ -772,8 +778,8 @@ class Eigsh(torch.autograd.Function):
 
     @staticmethod
     def forward(
-        A: torch.Tensor,  # noqa: N803
-        M: torch.Tensor | None = None,  # noqa: N803
+        a: torch.Tensor,
+        m: torch.Tensor,
         k: int = 1,
         sigma: float = 0.0,
         maxiter: int = 10,
@@ -782,22 +788,23 @@ class Eigsh(torch.autograd.Function):
         bwd_max_iter: int = 200,
         bwd_eps: float = 1e-12,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        assert isinstance(A, torch.Tensor)
-        assert isinstance(M, torch.Tensor)
+        # TODO: make M optional
+        assert isinstance(a, torch.Tensor)
+        assert isinstance(m, torch.Tensor)
 
-        device = A.device
-        dtype = M.dtype
-        if A.is_cpu:
-            A_sp = sp.torch_to_scipy(A)  # noqa: N806
-            M_sp = sp.torch_to_scipy(M)  # noqa: N806
-            if k < A.shape[0] - 1:
+        device = a.device
+        dtype = a.dtype
+        if a.is_cpu:
+            a_sp = sp.to_scipy(a)
+            m_sp = sp.to_scipy(m)
+            if k < a.shape[0] - 1:
                 evals, evecs = scipy.sparse.linalg.eigsh(
-                    A_sp, k=k, sigma=sigma, maxiter=maxiter, tol=tol
+                    a_sp, k=k, M=m_sp, sigma=sigma, maxiter=maxiter, tol=tol
                 )
             else:
-                A_sp = A_sp.toarray()  # noqa: N806
-                M_sp = M_sp.toarray()  # noqa: N806
-                evals, evecs = scipy.linalg.eigh(A_sp, b=M_sp)
+                a_sp = a_sp.toarray()
+                m_sp = m_sp.toarray()
+                evals, evecs = scipy.linalg.eigh(a_sp, b=m_sp)
             sort_idx = np.argsort(-np.abs(evals))
             evals = evals[sort_idx][:k]
             evecs = evecs[:, sort_idx][:, :k]
@@ -818,18 +825,18 @@ class Eigsh(torch.autograd.Function):
         k: int = evecs.shape[1]
         device = a.device
         dtype = a.dtype
+        if m is None:
+            m = sp.eye(a.shape[0], device=a.device, dtype=a.dtype)
 
         grad_a = None
         if ctx.needs_input_grad[0]:
+            if grad_evals is None:
+                grad_evals: torch.Tensor = torch.zeros(k, dtype=dtype, device=device)
+            if grad_evecs is None:
+                grad_evecs: torch.Tensor = torch.zeros(n, k, dtype=dtype, device=device)
+
             if ctx.adjoint == "truncate":
-                if grad_evals is None:
-                    grad_evals = torch.zeros(k, dtype=dtype, device=device)
-
-                if grad_evecs is None:
-                    grad_evecs = torch.zeros(n, k, dtype=dtype, device=device)
-                tilde_g = evecs.mT @ grad_evecs  # (k, k)
-
-                diff = evals[None, :] - evals[:, None]  # (k, k)
+                diff = evals[None, :] - evals[:, None]  # [k, k]
                 one_over_diff = torch.zeros_like(diff)
                 eps = torch.finfo(diff.dtype).eps
                 mask = ~torch.eye(k, dtype=torch.bool, device=diff.device)
@@ -837,6 +844,7 @@ class Eigsh(torch.autograd.Function):
                     diff[mask] + (diff[mask] == 0).to(diff.dtype) * eps
                 )
 
+                tilde_g = evecs.mT @ grad_evecs  # [k, k]
                 s = 0.5 * (tilde_g - tilde_g.mT) * one_over_diff
                 h = s + torch.diag(grad_evals)
 
@@ -845,24 +853,24 @@ class Eigsh(torch.autograd.Function):
                 grad_vals = -(evecs @ h)[rows, ...] * evecs[cols, ...]
                 if grad_vals.ndim == 2:
                     grad_vals = grad_vals.sum(-1)
-                grad_a = torch.sparse_coo_tensor(a.indices(), grad_vals, [n, n])
+                grad_a = sp.coo_tensor(a.indices(), grad_vals, [n, n])
             elif ctx.adjoint == "individual":
                 dg_dx = torch.zeros_like(evecs)
-                eye = sp.eye(a.shape[0], device=a.device, dtype=dtype)
                 lhs_i = torch.arange(n, device=device, dtype=torch.int64)
                 lhs_j = torch.full([n], n, device=device, dtype=torch.int64)
                 for i in range(evals.shape[0]):
-                    lhs_aa = (a - evals[i] * eye).coalesce()
-                    lhs = torch.sparse_coo_tensor(
+                    lhs_aa = (a - evals[i] * m).coalesce()
+                    lhs = sp.coo_tensor(
                         lhs_aa.indices(), lhs_aa.values(), size=[n + 1, n + 1]
                     ).coalesce()
-                    lhs = sp.append(lhs, torch.stack([lhs_i, lhs_j]), -evecs[:, i])
-                    lhs = sp.append(lhs, torch.stack([lhs_j, lhs_i]), -evecs[:, i])
+                    lhs_ba = -sp.matmul(m, evecs[:, i])
+                    lhs = sp.append(lhs, torch.stack([lhs_i, lhs_j]), -lhs_ba)
+                    lhs = sp.append(lhs, torch.stack([lhs_j, lhs_i]), -lhs_ba)
                     if grad_evals is None:
                         rhs = torch.nn.functional.pad(grad_evecs[:, i], (0, 1))
                     else:
                         rhs = torch.cat((grad_evecs[:, i], grad_evals[i : i + 1]), -1)
-                    lhs_scipy = sp.torch_to_scipy(lhs).tocsr()
+                    lhs_scipy = sp.to_scipy(lhs).tocsr()
                     rhs_numpy = rhs.cpu().detach().numpy()
                     result = scipy.sparse.linalg.spsolve(lhs_scipy, rhs_numpy)[:n]
                     dg_dx[:, i] = torch.tensor(result, device=device)
@@ -873,7 +881,7 @@ class Eigsh(torch.autograd.Function):
                 grad_vals = -dg_dx[rows, ...] * evecs[cols, ...]
                 if grad_vals.ndim == 2:
                     grad_vals = grad_vals.sum(-1)
-                grad_a = torch.sparse_coo_tensor(a.indices(), grad_vals, [n, n])
+                grad_a = sp.coo_tensor(a.indices(), grad_vals, [n, n])
             elif ctx.adjoint == "dodik-invert":
 
                 def implicit_func(a, x):

@@ -1,6 +1,6 @@
-# `iskra` ✨ - Tensor Geometry Processing
+![](docs/logo.svg)
 
-![](docs/logo.webp)
+# `iskra` ✨ Modern Geometry Processing
 
 This repository contains a lightweight geometry processing library that is meant to be a one-stop-shop for all of your geometric needs. Iskra is:
 * modern and Python-first,

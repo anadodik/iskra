@@ -8,7 +8,7 @@ import networkx as nx
 import scipy.sparse
 import torch
 
-from iskra.sparse import torch_to_scipy
+import iskra.sparse as sp
 
 
 def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int, ...]]:
@@ -179,7 +179,7 @@ def assemble_incidence_matrix(
         values = subface_sign.mT.flatten()
     else:
         values = torch.ones_like(subface_sign.mT.flatten())
-    return torch.sparse_coo_tensor(idcs, values, [n_faces, n_subfaces]).coalesce()
+    return sp.coo_tensor(idcs, values, [n_faces, n_subfaces]).coalesce()
 
 
 def incidence_matrix(
@@ -254,7 +254,7 @@ def vertex_adjacency_matrix(n_vertices: int, faces: torch.Tensor) -> torch.Tenso
     edges, _, _ = get_subfaces(faces, subface_dim=1)
     idx = torch.cat([edges, edges.flip(-1)]).mT
     values = torch.ones([2 * edges.shape[0]], device=faces.device)
-    return torch.sparse_coo_tensor(idx, values, [n_vertices, n_vertices])
+    return sp.coo_tensor(idx, values, [n_vertices, n_vertices])
 
 
 def boundary(faces: torch.Tensor) -> torch.Tensor:
@@ -292,7 +292,7 @@ def connected_components(
     device = faces.device
     adjacency = vertex_adjacency_matrix(n_vertices, faces)
     labels = torch.zeros(n_vertices, device=device)
-    adjacency_scipy = torch_to_scipy(adjacency)
+    adjacency_scipy = sp.to_scipy(adjacency)
     n_comp, labels = scipy.sparse.csgraph.connected_components(adjacency_scipy)
     labels = torch.from_numpy(labels).to(device=device, dtype=torch.long)
 

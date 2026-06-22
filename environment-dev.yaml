@@ -7,7 +7,6 @@ dependencies:
   - pip:
       # Linters:
       - ruff
-      - basedpyright
       - nvtx
       # Visualization
       - matplotlib
@@ -20,11 +19,15 @@ dependencies:
       - pytest-cases
       - pytest-cov
       # Documentation
-      - mkdocs
-      - mkdocs-material
-      - mkdocstrings
+      - mkdocs==1.6.1
+      - mkdocs-material==9.6
+      - mkdocstrings==0.28
       - mkdocstrings-python
-      - mkdocs-autorefs
+      - mkdocs-autorefs==1.4.3
+      # - mkdocs==1.6.1
+      # - mkdocs-materialx==10.1.8
+      # - mkdocstrings
+      # - mkdocstrings-python
       - griffe_typingdoc
       # Deployment
       - nanobind>=2.5.0

@@ -2,6 +2,7 @@ import pytest
 import torch
 
 import iskra.sparse as sp
+from tests.template import assert_equal
 
 
 def test_isect_indices_basic():
@@ -31,11 +32,11 @@ def test_isect_indices_order_independent():
 def test_mul_sparse_sparse_basic():
     a_idx = torch.tensor([[0, 1, 2], [3, 4, 5]])
     a_val = torch.tensor([2.0, 3.0, 4.0])
-    a = torch.sparse_coo_tensor(a_idx, a_val, size=(4, 6))
+    a = sp.coo_tensor(a_idx, a_val, size=(4, 6))
 
     b_idx = torch.tensor([[1, 2, 3], [4, 5, 6]])
     b_val = torch.tensor([5.0, 6.0, 7.0])
-    b = torch.sparse_coo_tensor(b_idx, b_val, size=(4, 6))
+    b = sp.coo_tensor(b_idx, b_val, size=(4, 6))
 
     out = sp.mul_sparse_sparse(a, b)
 
@@ -47,12 +48,8 @@ def test_mul_sparse_sparse_basic():
 
 
 def test_mul_sparse_sparse_shape_mismatch():
-    a = torch.sparse_coo_tensor(
-        torch.tensor([[0], [1]]), torch.tensor([1.0]), size=(2, 2)
-    )
-    b = torch.sparse_coo_tensor(
-        torch.tensor([[0], [1]]), torch.tensor([1.0]), size=(3, 3)
-    )
+    a = sp.coo_tensor(torch.tensor([[0], [1]]), torch.tensor([1.0]), size=(2, 2))
+    b = sp.coo_tensor(torch.tensor([[0], [1]]), torch.tensor([1.0]), size=(3, 3))
     with pytest.raises(ValueError):
         sp.mul_sparse_sparse(a, b)
 
@@ -60,11 +57,11 @@ def test_mul_sparse_sparse_shape_mismatch():
 def test_mul_sparse_sparse_partial_intersection():
     a_idx = torch.tensor([[0, 1, 2, 3], [0, 1, 2, 3]])
     a_val = torch.tensor([2.0, 3.0, 4.0, 5.0])
-    a = torch.sparse_coo_tensor(a_idx, a_val, size=(4, 4))
+    a = sp.coo_tensor(a_idx, a_val, size=(4, 4))
 
     b_idx = torch.tensor([[1, 3], [1, 3]])
     b_val = torch.tensor([10.0, 20.0])
-    b = torch.sparse_coo_tensor(b_idx, b_val, size=(4, 4))
+    b = sp.coo_tensor(b_idx, b_val, size=(4, 4))
 
     out = sp.mul_sparse_sparse(a, b).coalesce()
 
@@ -76,15 +73,15 @@ def test_mul_sparse_sparse_partial_intersection():
 
 
 def test_cat_sparse():
-    a = torch.sparse_coo_tensor(
+    a = sp.coo_tensor(
         torch.tensor([[0, 1], [0, 1]]), torch.tensor([1.0, 2.0]), size=(3, 2)
     )
-    b = torch.sparse_coo_tensor(
+    b = sp.coo_tensor(
         torch.tensor([[0, 2], [0, 1]]), torch.tensor([3.0, 4.0]), size=(3, 2)
     )
 
     out = sp.cat([a, b], dim=1).coalesce()
-    exp = torch.sparse_coo_tensor(
+    exp = sp.coo_tensor(
         torch.tensor([[0, 1, 0, 2], [0, 1, 2, 3]]),
         torch.tensor([1.0, 2.0, 3.0, 4.0]),
         size=(3, 4),
@@ -95,7 +92,7 @@ def test_cat_sparse():
     assert out.shape == exp.shape
 
     out = sp.cat([a, b], dim=0).coalesce()
-    exp = torch.sparse_coo_tensor(
+    exp = sp.coo_tensor(
         torch.tensor([[0, 1, 3, 5], [0, 1, 0, 1]]),
         torch.tensor([1.0, 2.0, 3.0, 4.0]),
         size=(6, 2),
@@ -104,3 +101,50 @@ def test_cat_sparse():
     assert torch.equal(out.indices(), exp.indices())
     assert torch.equal(out.values(), exp.values())
     assert out.shape == exp.shape
+
+
+def test_indexing():
+    a_idx = torch.tensor([[0, 1, 1, 2, 3], [0, 1, 0, 2, 3]])
+    a_val = torch.tensor([2.0, 3.0, 6.0, 4.0, 5.0])
+    a = sp.coo_tensor(a_idx, a_val, size=(4, 4))
+    a_dense = a.to_dense()
+
+    # We check for a few test that slicing matches what we'd expect manually,
+    # to hopefully also catch if `SparseTensor.to_dense` goes awry.
+    assert_equal(a[2, 2].to_dense(), torch.tensor(4.0))
+    assert_equal(a[0, 1:2].to_dense(), torch.tensor([0.0]))
+
+    assert_equal(a[2, 2].to_dense(), a_dense[2, 2])
+    assert_equal(a[3].to_dense(), a_dense[3])
+    assert_equal(a[0, 1:2].to_dense(), a_dense[0, 1:2])
+    assert_equal(a[0, 1:3].to_dense(), a_dense[0, 1:3])
+    assert_equal(a[0:2, 1:3].to_dense(), a_dense[0:2, 1:3])
+
+    assert_equal(a[0, torch.tensor([0])].to_dense(), a_dense[0, torch.tensor([0])])
+    assert_equal(a[0, torch.arange(1, 2)].to_dense(), a_dense[0, torch.arange(1, 2)])
+    assert_equal(a[0, torch.arange(1, 3)].to_dense(), a_dense[0, torch.arange(1, 3)])
+    assert_equal(
+        a[0:2, torch.arange(1, 3)].to_dense(), a_dense[0:2, torch.arange(1, 3)]
+    )
+
+    mask = torch.tensor([True, False, True, False])
+    assert_equal(a[1, mask].to_dense(), a_dense[1, mask])
+    assert_equal(a[2:, mask].to_dense(), a_dense[2:, mask])
+
+    assert_equal(a[0:2, None, 1:3].to_dense(), a_dense[0:2, None, 1:3])
+    assert_equal(a[3, None, 2].to_dense(), a_dense[3, None, 2])
+    assert_equal(a[None, 3, None].to_dense(), a_dense[None, 3, None])
+    assert_equal(a[None, mask, :].to_dense(), a_dense[None, mask, :])
+
+    # Following are different!
+    print(a[(torch.arange(0, 2)), torch.arange(1, 3)].to_dense())
+    print(a.to_dense()[torch.arange(0, 2), torch.arange(1, 3)])
+
+    print(a[(0, 1), (1, 2)].to_dense())
+    print(a.to_dense()[(0, 1), (1, 2)])
+
+    print(a[mask, mask].to_dense())
+    print(a_dense[mask, mask])
+
+    print(a[(True, False, True, False), (True, False, True, False)].to_dense())
+    print(a_dense[(True, False, True, False), (True, False, True, False)])
