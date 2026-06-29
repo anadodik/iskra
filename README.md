@@ -2,27 +2,49 @@
 
 # `iskra` ✨ Modern Geometry Processing
 
-This repository contains a lightweight geometry processing library that is meant to be a one-stop-shop for all of your geometric needs. Iskra is:
+
+Lightweight geometry processing library that is a one-stop shop for all your geometric needs. Iskra is:
 * modern and Python-first,
 * simple by default, powerful when needed,
-* fully differentiable (if needed),
+* fully differentiable and compatible with machine learning,
+* CPU and GPU enabled,
 * actievely maintained.
 
-## Obtaining Iskra ✨
+Support the project by starring it! [![GitHub stars](https://img.shields.io/github/stars/anadodik/iskra?style=social)](https://github.com/anadodik/iskra/stargazers)
 
-If you want to pull any of the notebooks in this repository, you will need to have [Git LFS](https://docs.github.com/en/repositories/working-with-files/managing-large-files/configuring-git-large-file-storage) installed on your system. If not, here are the instructions to help you get set up:
-```
-# Pick one of the following depending on your distribution:
-sudo apt install git-lfs  # on Ubuntu
-brew install git-lfs  # on MacOS
+> [!CAUTION]
+> This is a pre-release. We are actively working on a user guide, documentation, and setting up on PyPI.
 
-# Verify that the installation was successful:
-git lfs install
+## Example
+
+Computing vertex normals in iskra is as simple as:
+```python
+import torch
+
+from iskra.geometry import triangle_normals
+from iskra.mesh import Mesh
+from iskra.topology import face_index, reduce_on_subface
+
+mesh, _ = Mesh.from_path(
+    "oded://objects/koala/koala_low_resolution.obj",
+    device="cpu"
+)
+verts = mesh.vertices  # [V, 3]
+faces = mesh.faces  # [F, 3]
+
+tris = face_index(verts, faces)  # [F, 3, 3]
+
+tri_normals = triangle_normals(tris)  # [F, 3]
+
+vert_normals = reduce_on_subface(tri_normals, faces, verts.shape[0], "sum")  # [V, 3]
+vert_normals = torch.nn.functional.normalize(vert_normals, dim=-1)  # [V, 3]
 ```
+
+## Obtaining `iskra` ✨
 
 Change into the cloned iskra directory and install it to your active environment using:
-```
-pip install .
+```bash
+pip install -e git+https://github.com/anadodik/iskra/
 ```
 
 ## Development
@@ -37,4 +59,4 @@ pip install --no-build-isolation -Ceditable.rebuild=true -ve .
 
 ## FAQ
 - Why the name? 
-    - Iskra means “spark” in Serbo-Croatian: a spark enables using (a) torch. We also expect our system to be the spark that ignites exciting research in geometry. Most of all, I think it sounds cool to say.
+    - Iskra means “spark” in Serbo-Croatian: a spark enables using (a) torch. We also expect our system to be the spark that ignites exciting research in geometry. Most importantly, it sounds cool.
