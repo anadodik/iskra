@@ -244,7 +244,10 @@ class SparseTensor(torch.Tensor):
         elif func in mul_funcs:
             a, b = args
             with torch._C.DisableTorchFunctionSubclass():
-                ret = mul(a, b)
+                if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+                    ret = mul(a, b)
+                else:
+                    ret = func(*args, **kwargs)
         else:
             with torch._C.DisableTorchFunctionSubclass():
                 ret = func(*args, **kwargs)
@@ -272,12 +275,18 @@ class SparseTensor(torch.Tensor):
     def __mul__(
         self, other: "SparseTensor | torch.Tensor"
     ) -> "SparseTensor | torch.Tensor":
-        return mul(self, other)
+        if isinstance(other, torch.Tensor):
+            return mul(self, other)
+        else:
+            return super().__mul__(other)
 
     def __rmul__(
         self, other: "SparseTensor | torch.Tensor"
     ) -> "SparseTensor | torch.Tensor":
-        return mul(self, other)
+        if isinstance(other, torch.Tensor):
+            return mul(other, self)
+        else:
+            return super().__rmul__(other)
 
     def reshape(self, *shape: int) -> "SparseTensor":
         return reshape(self, *shape)
@@ -720,6 +729,7 @@ def mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     idx = a.indices()
     val = a.values()
     out_shape = torch.broadcast_shapes(a.shape, b.shape)
+    b = b.expand(out_shape)
 
     b_idx = []
     for dim in range(a.dim()):

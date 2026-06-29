@@ -303,7 +303,7 @@ class Mesh(torch.nn.Module):
         path: Path | str,
         normalize: bool = False,
         dtype: torch.dtype = torch.float32,
-        device: str | torch.device = "cuda",
+        device: str | torch.device = "cpu",  # TODO: autoselect default device
     ) -> tuple[Self, MeshData]:
         mesh_data = load(path, dtype=dtype, device=device)
         if mesh_data.triangles.shape[0] > 0 and mesh_data.lines.shape[0] > 0:
