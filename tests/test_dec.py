@@ -5,6 +5,8 @@ import torch
 
 from iskra.dec import hodge_0, hodge_0_inv, hodge_1, hodge_1_inv, hodge_2, hodge_2_inv
 from iskra.geometry import (
+    cotan_weights,
+    cotan_weights_intrinsic,
     edge_lengths,
     tetrahedron_volumes,
     tetrahedron_volumes_intrinsic,
@@ -84,3 +86,17 @@ def test_triangles(triangles: tuple[torch.Tensor, torch.Tensor]) -> None:
     expected_hodge_2 = torch.tensor([1 / 2, 1 / 2], device=verts.device)
     torch.testing.assert_close(hodge_2(verts, faces).values(), expected_hodge_2)
     torch.testing.assert_close(hodge_2_inv(verts, faces).values(), 1 / expected_hodge_2)
+
+
+def test_cotan_weights(triangles: tuple[torch.Tensor, torch.Tensor]) -> None:
+    verts, faces = triangles
+    edges, face_to_edge, _ = get_subfaces(faces)
+    lengths = edge_lengths(face_index(verts, edges))
+
+    expected_cotan = torch.tensor(
+        [1 / 2, 1 / 2, 0.0, 1 / 2, 1 / 2], device=verts.device
+    )
+    torch.testing.assert_close(cotan_weights(verts, faces), expected_cotan)
+    torch.testing.assert_close(
+        cotan_weights_intrinsic(lengths, face_to_edge), expected_cotan
+    )

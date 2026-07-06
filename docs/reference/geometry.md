@@ -7,4 +7,5 @@ and then have a separate page for each submodule.
 ::: iskra.geometry.barycentric
 ::: iskra.geometry.volume
 ::: iskra.geometry.normals
+::: iskra.geometry.cotan_weights
 ::: iskra.geometry.coordinate_system

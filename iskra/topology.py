@@ -12,7 +12,7 @@ import iskra.sparse as sp
 
 
 def face_to_subface_idcs(face_dim: int, subface_dim: int = -1) -> list[tuple[int, ...]]:
-    """Returns indices of subfaces within faces.
+    """Returns canonical indices of subfaces within faces.
 
     In codimension 1, makes sure triangles/edges are oriented correctly
     and also makes sure that the `i`th subface is opposite to vertex `i`.
