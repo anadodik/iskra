@@ -138,7 +138,8 @@ def default_solver(
 ) -> SolverT:
     # TODO: better support for LU
     mat = mat.coalesce()
-    if is_psd:
+    is_float = mat.dtype == torch.float32 or mat.dtype == torch.float64
+    if is_psd and is_float:
         if mat.is_cpu and _cholmod_available:
             _solve_fn = CholmodSolver(mat, analyze_only=analyze_only)
         elif mat.is_cuda and _nvmath_available:

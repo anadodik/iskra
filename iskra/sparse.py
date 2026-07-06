@@ -742,21 +742,36 @@ def mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 def matmul(
     a: SparseTensor | torch.Tensor, b: SparseTensor | torch.Tensor
 ) -> SparseTensor | torch.Tensor:
-    swapped = False
     if not is_sparse_any(a) and not is_sparse_any(b):
-        return a @ b
+        result = a @ b
     elif is_sparse_any(a) and is_sparse_any(b):
-        return torch.sparse.mm(a, b)
-    elif is_sparse_any(b):
-        swapped = True
-        a, b = b.mT, a.mT
-    if a.is_sparse and not a.is_sparse_csr:
-        a = a.to_sparse_csr()
+        with torch._C.DisableTorchFunctionSubclass():
+            result = torch.sparse.mm(a, b)
+    else:
+        swapped = False
+        if not is_sparse_any(a) and is_sparse_any(b):
+            swapped = True
+            a, b = b.mT, a.mT
+        if a.is_sparse and not a.is_sparse_csr:
+            a = a.to_sparse_csr()
+        if b.ndim == 1:
+            with torch._C.DisableTorchFunctionSubclass():
+                result = torch.sparse.mm(a, b[..., None])[:, 0]
+        elif a.ndim >= 2 and b.ndim >= 2:
+            with torch._C.DisableTorchFunctionSubclass():
+                result = torch.sparse.mm(a, b)
+        if swapped and result.ndim == 2:
+            result = result.mT
 
-    if b.ndim == 1:
-        result = torch.sparse.mm(a, b[..., None])[:, 0]
-    elif a.ndim >= 2 and b.ndim >= 2:
-        result = torch.sparse.mm(a, b)
-    if swapped and result.ndim == 2:
-        result = result.mT
+    if (
+        isinstance(result, torch.Tensor)
+        and not isinstance(result, SparseTensor)
+        and is_sparse_any(result)
+        and (isinstance(a, SparseTensor) or isinstance(b, SparseTensor))
+    ):
+        ret_sparse = torch.Tensor._make_subclass(
+            SparseTensor, result, result.requires_grad
+        )
+        ret_sparse._tensor = result
+        result = ret_sparse
     return result
