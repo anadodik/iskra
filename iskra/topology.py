@@ -69,23 +69,21 @@ def get_subfaces(
     """Finds all subsimplices of dimension d in a set of higher-dimensional faces.
 
     Args:
-        faces (torch.Tensor): A [n_faces, simplex_dim] tensor containing the
-            vertices of the higher-dimensional faces.
-        subface_dim (int): The dimension of the requested simplex. Note that the simplex
+        faces (Tensor[n_faces, face_dim]): Face-to-vertex indices of higher-dim faces.
+        subface_dim (int): The dimension of the requested subface. Note that the face
             dimension is one less than the number of its vertices, e.g. edges are
-            1-simplices, triangles 2-simplices, etc.
+            1-faces, triangles 2-faces, etc.
 
     Returns:
-        torch.Tensor: A tensor containing all subsimplex indices. Shape is
-            [n_simplices, n_subfaces_per_simplex, d].
+        Tensor[n_subfaces, subface_dim]: Subface-vertex indices.
 
-        torch.Tensor: The sign says whether the subface, as it appears in the subfaces,
-            is flipped _with regards to some canonical orientation of the subface!_.
-            This means that sign for vertices will _always_ be +1, as they can only
-            have one canonical orientation. This makes it slightly different
-            from the orientation in DEC's `d_{0, 1}` operator in this case.
+        Tensor[n_faces, n_subfaces_per_face]: Face-subface indices.
 
-        [???].
+        Tensor[n_faces, n_subfaces_per_face]: Sign (-1 or +1) signaling a subface in the
+            face-subface indices is flipped _with regards to its canonical orientation_
+            as dictated by the subface-vertex indices. The sign for vertex subfaces is
+            _always_ +1, as they can only have one canonical orientation.
+            This is a different notion of orientation from DEC's `d_{0, 1}` operator.
     """
     if faces.ndim != 2:
         raise ValueError(
