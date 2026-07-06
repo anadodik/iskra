@@ -65,9 +65,7 @@ def hodge_1_inv(
     if faces.shape[-1] == 2:
         return sp.diag(edge_lengths(face_index(vertices, faces)))
     elif faces.shape[-1] == 3:
-        weights = cotan_weights(vertices, faces)
-        if clamp_min is not None:
-            weights = weights.clamp(clamp_min)
+        weights = cotan_weights(vertices, faces, clamp_min)
         return sp.diag(-1 / weights)
     else:
         raise ValueError(f"hodge_1_inv not implemented for faces.shape={faces.shape}.")
@@ -128,18 +126,22 @@ def hodge_0_intrinsic_inv(
 
 
 def hodge_1_intrinsic(
-    edge_lengths: torch.Tensor, face_to_edge: torch.Tensor
+    edge_lengths: torch.Tensor,
+    face_to_edge: torch.Tensor,
+    clamp_min: float | None = None,
 ) -> torch.Tensor:
     # TODO(anadodik): should also work for polyline meshes
-    cot = cotan_weights_intrinsic(edge_lengths, face_to_edge)
+    cot = cotan_weights_intrinsic(edge_lengths, face_to_edge, clamp_min)
     return sp.diag(cot)
 
 
 def hodge_1_intrinsic_inv(
-    edge_lengths: torch.Tensor, face_to_edge: torch.Tensor
+    edge_lengths: torch.Tensor,
+    face_to_edge: torch.Tensor,
+    clamp_min: float | None = None,
 ) -> torch.Tensor:
     # TODO(anadodik): should also work for polyline meshes
-    cot = cotan_weights_intrinsic(edge_lengths, face_to_edge)
+    cot = cotan_weights_intrinsic(edge_lengths, face_to_edge, clamp_min)
     return sp.diag(1 / cot)
 
 
@@ -155,3 +157,17 @@ def hodge_2_intrinsic_inv(
 ) -> torch.Tensor:
     volumes = volume_form_intrinsic(edge_lengths, face_to_edge)
     return sp.diag(1 / volumes)
+
+
+def laplacian_intrinsic(
+    edge_lengths: torch.Tensor,
+    faces: torch.Tensor,
+    face_to_edge: torch.Tensor,
+    n_vertices: int,
+    clamp_min: float | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    derivative = d_01(faces, dtype=edge_lengths.dtype)
+    hodge = hodge_1_intrinsic(edge_lengths, face_to_edge, clamp_min)
+    lap = sp.matmul(sp.matmul(derivative.mT, hodge), derivative)
+    mass = hodge_0_intrinsic(edge_lengths, faces, face_to_edge, n_vertices)
+    return lap, mass

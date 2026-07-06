@@ -185,12 +185,12 @@ def volume_form_intrinsic(
     Returns:
         Tensor[Float, [S]]: Simplices generlized volumes.
     """
-    n_simplex_verts = edge_lengths.shape[-2]
-    if n_simplex_verts == 4:
+    n_simplex_verts = face_to_edge.shape[-1]
+    if n_simplex_verts == 6:
         return tetrahedron_volumes_intrinsic(edge_lengths, face_to_edge)
     elif n_simplex_verts == 3:
         return triangle_areas_intrinsic(edge_lengths, face_to_edge)
-    elif n_simplex_verts == 2:
+    elif n_simplex_verts == 1:
         assert edge_lengths.ndim == 2
         assert edge_lengths.shape[-1] == 1
 
