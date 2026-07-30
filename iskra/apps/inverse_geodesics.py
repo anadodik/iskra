@@ -19,7 +19,6 @@ from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
 from iskra.profiling import global_profiler, profile_fn
 from iskra.sparse_linalg import (
-    CholmodSolver,
     SolverT,
     default_solver,
     linear_solve,
@@ -112,12 +111,12 @@ def rdg_solve(
 
     unknown_idx = sp.index_complement(n_vertices, bc_idx)
     vert_areas_unknown = vert_areas[unknown_idx]
-    g_unknown = sp.get_slice(g, None, unknown_idx)
+    g_unknown = g[:, unknown_idx]
     lap_unknown = sp.get_slice(lap, unknown_idx, unknown_idx)
     div_unknown = grad_to_div(g_unknown, tri_areas)
     g_unknown = g_unknown.to_sparse_csr()
     div_unknown = div_unknown.to_sparse_csr()
-    chol = CholmodSolver(lap_unknown)
+    chol = default_solver(lap_unknown)
 
     solver = make_fixed_point_layer(
         partial(rdg_step, alphak=alphak, lap_solver=chol),
@@ -125,10 +124,10 @@ def rdg_solve(
         (2, 3, 4, 5, 6, 7),
         fwd_method="fixed-point",
         fwd_max_iter=fwd_max_iter,
-        fwd_eps=1e-12,
+        fwd_abs_tol=1e-12,
         bwd_method="gmres",
         bwd_max_iter=bwd_max_iter,
-        bwd_eps=1e-6,
+        bwd_abs_tol=1e-6,
     )
 
     u_unknown = torch.zeros([unknown_idx.shape[0]], device=device, dtype=dtype)
