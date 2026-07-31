@@ -90,7 +90,16 @@ def make_adjoint_vjps[T, **P](
                 create_graph=False,
                 allow_unused=True,
             )
-            return torch.cat([grad.flatten() for grad in grads])
+            return torch.cat(
+                [
+                    (
+                        grad.flatten()
+                        if grad is not None
+                        else torch.zeros_like(before).flatten()
+                    )
+                    for grad, before in zip(grads, befores)
+                ]
+            )
 
         def vjp_params(z_grad: torch.Tensor) -> tuple[torch.Tensor, ...]:
             return torch.autograd.grad(
