@@ -88,6 +88,22 @@ def unravel_index(
     return torch.stack(tuple(reversed(idx)))
 
 
+class _SparseTensorBridge(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, tensor: torch.Tensor, wrapper_cls: type) -> torch.Tensor:
+        wrapper = torch.Tensor._make_subclass(
+            wrapper_cls, tensor, tensor.requires_grad
+        )
+        wrapper._tensor = tensor
+        return wrapper
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.Tensor) -> tuple[torch.Tensor, None]:
+        if isinstance(grad_output, SparseTensor):
+            grad_output = grad_output.torch_tensor()
+        return grad_output, None
+
+
 class SparseTensor(torch.Tensor):
     """Sane sparse PyTorch Tensor.
 
@@ -99,7 +115,7 @@ class SparseTensor(torch.Tensor):
         cls,
         tensor: torch.Tensor,
         *,
-        layout: Literal["coo", "csr"] = "coo",
+        layout: Literal["coo", "csr"] | None = None,
         dtype: torch.dtype | None = None,
         device: torch.device | None = None,
         requires_grad: bool = False,
@@ -111,7 +127,7 @@ class SparseTensor(torch.Tensor):
                 "To construct from raw indices, use SparseTensor.from_coo() "
                 "or SparseTensor.from_csr()."
             )
-        if not tensor.is_sparse:
+        if tensor.layout not in (torch.sparse_coo, torch.sparse_csr):
             raise TypeError(
                 "SparseTensor does not accept dense tensors. "
                 "Use SparseTensor.from_coo() or SparseTensor.from_csr() to "
@@ -128,6 +144,9 @@ class SparseTensor(torch.Tensor):
             tensor = tensor.to_sparse_csr()
         elif layout == "coo" and tensor.layout == torch.sparse_csr:
             tensor = tensor.to_sparse_coo()
+
+        if not tensor.is_leaf:
+            return _SparseTensorBridge.apply(tensor, cls)
 
         wrapper = torch.Tensor._make_subclass(cls, tensor, tensor.requires_grad)
         wrapper._tensor = tensor
@@ -238,7 +257,7 @@ class SparseTensor(torch.Tensor):
             with torch._C.DisableTorchFunctionSubclass():
                 ret = matmul(a, b)
                 if a.is_sparse and b.is_sparse:
-                    return torch.Tensor._make_subclass(cls, ret, ret.requires_grad)
+                    return cls(ret)
                 else:
                     return ret
         elif func in mul_funcs:
@@ -257,9 +276,7 @@ class SparseTensor(torch.Tensor):
             and not isinstance(ret, cls)
             and func not in dense_funcs
         ):
-            ret_sparse = torch.Tensor._make_subclass(cls, ret, ret.requires_grad)
-            ret_sparse._tensor = ret
-            ret = ret_sparse
+            ret = cls(ret)
         return ret
 
     def __matmul__(
@@ -769,9 +786,5 @@ def matmul(
         and is_sparse_any(result)
         and (isinstance(a, SparseTensor) or isinstance(b, SparseTensor))
     ):
-        ret_sparse = torch.Tensor._make_subclass(
-            SparseTensor, result, result.requires_grad
-        )
-        ret_sparse._tensor = result
-        result = ret_sparse
+        result = SparseTensor(result)
     return result
