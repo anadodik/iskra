@@ -918,12 +918,12 @@ def _build_index_selection_mask(
                 mask &= x.indices()[dim] == idx
                 new_shape[dim] = 1
             case torch.Tensor(dtype=torch.int64):
-                # TODO(anadodik): check tensor dimensions
-                idx = torch.where(idx >= 0, idx, x.shape[dim] + idx)
-                x_idx_unq, inverse = torch.unique(x.indices()[dim], return_inverse=True)
-                isect_unq, _ = isect_indices(x_idx_unq, idx)
-                isect_mask = torch.gather(isect_unq, 0, inverse)
-                mask &= isect_mask
+                x_idcs = x.indices()[dim]
+                appears_in_idx = torch.zeros(
+                    x.shape[dim], dtype=torch.bool, device=idx.device
+                )
+                appears_in_idx[idx] = True
+                mask &= appears_in_idx[x_idcs]
                 new_shape[dim] = len(idx)
             case torch.Tensor(dtype=torch.bool):
                 idx = torch.nonzero(idx)
@@ -1025,8 +1025,11 @@ def get_slice(x: SparseTensor, *indices: _INDEX_TYPE) -> SparseTensor:
     # and computes the output shape from the input
     assert x.layout == torch.sparse_coo
     mask, new_shape = _build_index_selection_mask(x, *indices)
-    selected_idx = x.indices()[:, mask]
-    selected_val = x.values()[mask]
+    # The following is faster than indices()[:, mask] and values()[mask] because
+    # masking with a boolean tensor calls nonzero under the hood.
+    mask_idcs = mask.nonzero().squeeze(1)
+    selected_idx = x.indices().index_select(1, mask_idcs)
+    selected_val = x.values().index_select(0, mask_idcs)
 
     # Pad missing indices:
     n_non_none_dims = 0

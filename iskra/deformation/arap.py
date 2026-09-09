@@ -151,6 +151,7 @@ def arap_solve(
     vert_vert_weights: torch.Tensor,
     lap: torch.Tensor,
     lap_factors: spla.SolverT | None = None,
+    init: torch.Tensor | None = None,
     fwd_max_iter: int = 1000,
     compute_fwd_energy: bool = False,
     fwd_error_metric: Literal["delta", "energy"] = "delta",
@@ -196,8 +197,10 @@ def arap_solve(
         bwd_rel_tol=bwd_rel_tol,
         verbose=verbose,
     )
+    if init is None:
+        init = verts
+    init = init.detach().clone()
 
-    init = verts.clone()
     # TODO: Next line only necessary because of bad gradients with identity matrix?
     init[handle_idx] = handles
     result = solver(init, verts, vert_vert_weights, vert_vert, lap, handle_idx, handles)
