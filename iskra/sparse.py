@@ -1,13 +1,12 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
+from collections.abc import Callable, Sequence
 from functools import reduce
 from numbers import Number
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     Literal,
-    Sequence,
     cast,
     overload,
 )
@@ -710,6 +709,28 @@ def csr_tensor(
     )
 
 
+def zeros(
+    size: torch.Size | list[int] | tuple[int, ...],
+    dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
+) -> SparseTensor:
+    """Constructs a sparse COO zero matrix.
+
+    Args:
+        size (list[int] | tuple[int, ...] | None): Size of the sparse tensor.
+        dtype (torch.dtype): Matrix data type. Defaults to `torch.float32`.
+        device (str | torch.device, optional): Device for the matrix. Defaults to "cpu".
+
+    Returns:
+        SparseTensor[DType, size]: Sparse `n`-by-`n` identity matrix in COO format.
+    """
+    return coo_tensor(
+        torch.empty([len(size), 0], dtype=torch.int64, device=device),
+        torch.empty([0], dtype=dtype, device=device),
+        size=size,
+    )
+
+
 def eye(
     n: int, dtype: torch.dtype = torch.float32, device: str | torch.device = "cpu"
 ) -> SparseTensor:
@@ -1078,7 +1099,7 @@ def get_slice(x: SparseTensor, *indices: _INDEX_TYPE) -> SparseTensor:
 
 
 def fill_slice(
-    x: SparseTensor, fill_value: float | int, *indices: slice | int | tuple[int, ...]
+    x: SparseTensor, fill_value: float, *indices: _INDEX_TYPE
 ) -> SparseTensor:
     """Sets all nonzero entries in a slice of a sparse COO tensor to a chosen value.
 
@@ -1109,9 +1130,7 @@ def fill_slice(
     )
 
 
-def zero_slice(
-    x: SparseTensor, *indices: slice | int | tuple[int, ...]
-) -> SparseTensor:
+def zero_slice(x: SparseTensor, *indices: _INDEX_TYPE) -> SparseTensor:
     # TODO: this function should probably be getting rid of nnz entries!
     assert x.layout == torch.sparse_coo
     return fill_slice(x, 0, *indices)
@@ -1162,6 +1181,49 @@ def repdiag(x: SparseTensor, n_reps: int) -> SparseTensor:
         torch.cat([indices + i * size for i in range(n_reps)], -1),
         torch.cat(n_reps * [values], -1),
         size=[n_reps * size, n_reps * size],
+        is_coalesced=True,
+    )
+
+
+def cat_diag(xs: Sequence[SparseTensor]) -> SparseTensor:
+    """Concatenates sparse COO matrice along a diagonal to make a block-diagonal matrix.
+
+    Args:
+        xs (Sequence[SparseTensor]): Sequences of matrices to cocnatenate.
+
+    Returns:
+        SparseTensor: Block-diagonal matrix with `xs` embedded along the diagonal.
+    """
+    assert isinstance(xs, Sequence)
+    assert len(xs) > 0
+    for x in xs:
+        assert isinstance(x, torch.Tensor)
+
+    block_idcs_list = []
+    block_values_list = []
+    total_shape = None
+
+    for x in xs:
+        x = x.coalesce()
+        indices = x.indices()
+        values = x.values()
+        shape = torch.tensor(x.shape, device=x.device)
+        if total_shape is None:
+            block_idcs_list.append(indices)
+            block_values_list.append(values)
+            total_shape = shape
+        else:
+            assert total_shape.nelement() == shape.nelement()
+            block_idcs_list.append(indices + total_shape[:, None])
+            block_values_list.append(values)
+            total_shape += shape
+
+    assert total_shape is not None
+
+    return coo_tensor(
+        torch.cat(block_idcs_list, -1),
+        torch.cat(block_values_list, -1),
+        size=total_shape.cpu().numpy().tolist(),
         is_coalesced=True,
     )
 
