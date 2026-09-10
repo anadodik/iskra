@@ -68,7 +68,7 @@ def arap_step(
         vert_rot = closest_rot_3x3(vert_covs)
 
     with profile_block("rotation"):
-        halfedge_rot = face_index(vert_rot.mT, vert_vert).mean(1)
+        halfedge_rot = face_index(vert_rot.mT, vert_vert).mean(-3)
         rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
         rhs = reduce_on_subface(
             rotated_halfedge_vecs, vert_vert[:, 0:1], n_vertices, "sum"
@@ -114,7 +114,7 @@ def arap_step(
 #     weighted_dist = cots * torch.linalg.vector_norm(diff, dim=-1, ord=2) ** 2
 #     vert_energy = reduce_on_subface(weighted_dist, halfedges[:, 0:1], n_vertices, "sum")
 #     # THIS IS INTERPOLATING ROTATIONS WEIRDLY??? SHRINKWRAP ARTIFACTS?
-#     halfedge_rot = face_index(vert_rot, halfedges).mean(1)
+#     halfedge_rot = face_index(vert_rot, halfedges).mean(-3)
 #     rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
 #     rhs = reduce_on_subface(rotated_halfedge_vecs, halfedges[:, 0:1], n_vertices, "sum")
 #     verts_deformed = spla.min_quadratic_energy(
