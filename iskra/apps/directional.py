@@ -35,7 +35,7 @@ if __name__ == "__main__":
     source_v = -1.0 * t_source + 0.0 * b_source
     intrinsic = to_intrinsic_n_rosy(source_v, t_source, b_source, n)
 
-    laplacian = face_connection_laplacian(verts, faces, flaps, connection_n)
+    laplacian, _ = face_connection_laplacian(verts, faces, flaps, connection_n)
 
     transported = min_quadratic_energy(
         laplacian,

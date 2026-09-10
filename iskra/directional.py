@@ -1,13 +1,13 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import torch
 
 import iskra.sparse as sp
 from iskra.geometry import normal_coordinate_system
 from iskra.geometry.normals import triangle_normals
-from iskra.geometry.volume import edge_lengths, triangle_areas_intrinsic
+from iskra.geometry.volume import edge_lengths, triangle_areas, triangle_areas_intrinsic
 from iskra.sparse_linalg import min_quadratic_energy
 from iskra.topology import face_index, get_subfaces
 
@@ -285,7 +285,7 @@ def transport_from_face(
 
 def face_connection_d_01(
     n_faces: int, flaps: torch.Tensor, connection: torch.Tensor
-) -> torch.Tensor:
+) -> sp.SparseTensor:
     """Construct the face-based connection differetial for an N-RoSy field.
 
     Args:
@@ -316,8 +316,12 @@ def face_connection_mass(
     edges: torch.Tensor,
     face_to_edge: torch.Tensor,
     flaps: torch.Tensor,
-) -> torch.Tensor:
+) -> sp.SparseTensor:
     """Makes the face-based connection mass matrix for an N-RoSy field via edge lengths.
+
+    Given edge $e$ with adjacent faces $f$ and $g$, this matrix is the length of the
+    primal edge over the length of the dual edge. See "Modeling n-Symmetry Vector Fields
+    using Higher-Order Energies" by Brandt et al. 2018.for more information.
 
     Args:
         verts (Tensor[Float, [V, 3]]): Mesh vertices.
@@ -332,9 +336,12 @@ def face_connection_mass(
     edge_vecs = face_index(verts, edges)
     lengths = edge_lengths(edge_vecs)
     areas = triangle_areas_intrinsic(lengths, face_to_edge)
-    areas_0 = torch.where(flaps[:, 0] != -1, areas[flaps[:, 0]], 0)
-    areas_1 = torch.where(flaps[:, 1] != -1, areas[flaps[:, 1]], 0)
-    mass = 3 * lengths / (areas_0 + areas_1)
+    areas = torch.where(
+        (flaps[:, 0] != -1) & (flaps[:, 1] != -1),
+        areas[flaps[:, 0]] + areas[flaps[:, 1]],
+        0,
+    )
+    mass = 3 * (lengths**2) / areas
     mass = sp.diag(mass.to(dtype=torch.cfloat))
     return mass
 
@@ -344,7 +351,7 @@ def face_connection_laplacian(
     faces: torch.Tensor,
     flaps: torch.Tensor,
     connection: torch.Tensor,
-) -> torch.Tensor:
+) -> tuple[sp.SparseTensor, sp.SparseTensor]:
     """Construct the face-based connection laplacian for an N-RoSy field.
 
     Args:
@@ -362,7 +369,7 @@ def face_connection_laplacian(
     mass = face_connection_mass(verts, edges, face_to_edge, flaps)
     d_01 = face_connection_d_01(faces.shape[0], flaps, connection)
     laplacian = d_01.mT @ mass @ d_01
-    return laplacian
+    return laplacian, mass
 
 
 def smooth_n_rosy(
@@ -407,14 +414,14 @@ def smooth_n_rosy(
         intrinsic = torch.tensor(intrinsic, device=device)
     assert isinstance(intrinsic, torch.Tensor)
 
-    laplacian = face_connection_laplacian(vertices, faces, flaps, connection**n)
+    laplacian, _ = face_connection_laplacian(vertices, faces, flaps, connection**n)
     rhs = torch.zeros([faces.shape[0]], dtype=intrinsic.dtype)
     _, transported = min_quadratic_energy(laplacian, rhs, sources, intrinsic)
     return transported
 
 
 def smooth_frame_field(
-    vertices: torch.Tensor,
+    verts: torch.Tensor,
     faces: torch.Tensor,
     flaps: torch.Tensor,
     connection: torch.Tensor,
@@ -422,11 +429,15 @@ def smooth_frame_field(
     source_vals: complex | Iterable[complex] | torch.Tensor | None = None,
     partial_idcs: int | Iterable[int] | torch.Tensor | None = None,
     partial_vals: complex | Iterable[complex] | torch.Tensor | None = None,
+    ortho_reg_lambda: float = 0.0,
 ) -> torch.Tensor:
     """Smooth a frame field with sparse hard constraints.
 
+    Smoothing energy based on the paper "Modeling n-Symmetry Vector Fields using
+    Higher-Order Energies" by Brandt et al. 2018.
+
     Args:
-        vertices (Tensor[Float, [V, 2 | 3]]): Mesh vertices.
+        verts (Tensor[Float, [V, 2 | 3]]): Mesh vertices.
         faces (Tensor[Int64, [F, 3]]): Triangle faces.
         flaps (Tensor[Int64, [E, 2]]): Edge-to-face connectivity in the mesh.
             See `edge_flaps()`.
@@ -442,6 +453,8 @@ def smooth_frame_field(
         partial_vals (tuple[complex, complex] | Tensor[Complex, [P]]): Complex 2-RoSy
             polyvector coefficients to be transported.  Use `to_intrinsic_frame_field()`
             with `n=2` to project extrinsic vectors to intrinsic ones.
+        ortho_reg_lambda (float): Strength of an orthogonality regularizer.
+            Regularization disabled when `ortho_reg_lambda=0.0`.
 
     Returns:
         Tensor[Complex, [F, 2]]: Smoothed vectors.
@@ -451,7 +464,7 @@ def smooth_frame_field(
     if not sources_exist and not partial_exist:
         raise ValueError("Must specify either partial or full hard constraints.")
 
-    device = vertices.device
+    device = verts.device
     if sources_exist:
         dtype = source_vals.dtype
     else:
@@ -485,36 +498,39 @@ def smooth_frame_field(
     elif not isinstance(partial_vals, torch.Tensor):
         partial_vals = torch.tensor(partial_vals, device=device)
 
-    laplacian_2 = face_connection_laplacian(vertices, faces, flaps, connection**2)
-    laplacian_4 = face_connection_laplacian(vertices, faces, flaps, connection**4)
+    laplacian_2, mass_e = face_connection_laplacian(verts, faces, flaps, connection**2)
+    laplacian_4, _ = face_connection_laplacian(verts, faces, flaps, connection**4)
 
     n_faces = faces.shape[0]
-    block_idcs = torch.cat([laplacian_2.indices(), n_faces + laplacian_4.indices()], -1)
-    block_values = torch.cat([laplacian_2.values(), laplacian_4.values()], -1)
-    block_laplacian = sp.coo_tensor(
-        block_idcs, block_values, size=[2 * n_faces, 2 * n_faces]
-    )
+    block_laplacian = sp.cat_diag([laplacian_2, laplacian_4])
     block_rhs = torch.cat([torch.zeros([2 * n_faces], dtype=dtype)])
 
-    partial_projection = sp.eye(2 * n_faces, dtype=dtype, device=device)
-    partial_projection = sp.fill_slice(
-        partial_projection, -1, partial_idcs, partial_idcs
+    partial_proj = sp.eye(2 * n_faces, dtype=dtype, device=device)
+    partial_proj = sp.fill_slice(partial_proj, -1, partial_idcs, partial_idcs)
+    partial_proj = sp.zero_slice(
+        partial_proj, n_faces + partial_idcs, n_faces + partial_idcs
     )
-    partial_projection = sp.fill_slice(
-        partial_projection, 0, n_faces + partial_idcs, n_faces + partial_idcs
-    )
-    partial_projection = sp.append(
-        partial_projection,
+    partial_proj = sp.append(
+        partial_proj,
         torch.stack([n_faces + partial_idcs, partial_idcs]),
         partial_vals,
     )
-    partial_projection = sp.append(
-        partial_projection,
+    partial_proj = sp.append(
+        partial_proj,
         torch.stack([partial_idcs, n_faces + partial_idcs]),
         partial_vals,
     )
 
-    system = partial_projection.adjoint() @ block_laplacian @ partial_projection
+    system = block_laplacian / mass_e.sum()
+    if ortho_reg_lambda > 0:
+        areas = triangle_areas(face_index(verts, faces)).to(dtype=laplacian_2.dtype)
+        total_area = areas.sum()
+        ortho_reg = sp.cat_diag([sp.diag(areas), sp.zeros([n_faces, n_faces])])
+        # 3 * total_area comes from https://github.com/avaxman/Directional/blob/25738730958f0bfa68289ae628a5cd3c4b719d61/include/directional/polyvector_field.h#L192
+        # 3 because (n - 1).
+        system = system + 1 / (3 * total_area) * ortho_reg_lambda * ortho_reg
+
+    system = partial_proj.adjoint() @ system @ partial_proj
     rhs = torch.cat([block_rhs])
     _, transported = min_quadratic_energy(
         system,
@@ -522,6 +538,6 @@ def smooth_frame_field(
         torch.cat([source_idcs, n_faces + source_idcs, n_faces + partial_idcs]),
         torch.cat([source_vals.mT.flatten(), -torch.ones_like(partial_vals)]),
     )
-    transported = partial_projection @ transported
+    transported = partial_proj @ transported
     transported = transported.reshape(2, -1).mT
     return transported

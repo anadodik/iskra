@@ -230,6 +230,7 @@ def edge_flaps(faces: torch.Tensor) -> torch.Tensor:
     Returns:
         flaps (Tensor[Int64, [E, 2]]): The edge flaps tensor.
     """
+    # TODO: rename to dual edges.
     device = faces.device
 
     idcs: list[tuple[int, ...]] = face_to_subface_idcs(2, 1)
