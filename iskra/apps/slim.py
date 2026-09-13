@@ -163,7 +163,7 @@ if __name__ == "__main__":
 
         ps_boundary = ps.register_curve_network(
             "boundary",
-            face_index(verts, bdr).numpy(),
+            face_index(verts, bdr, face_ndim=1).numpy(),
             edges="loop",
         )
 

@@ -12,6 +12,7 @@ from numpy import isin
 from iskra.topology import (
     connected_components,
     edge_flaps,
+    face_index,
     get_subfaces,
     reduce_on_subface,
 )
@@ -115,6 +116,240 @@ def test_connected_components(disconnected: tuple[int, torch.Tensor]):
     assert_equal(face_labels, torch.tensor([1, 1]))
 
 
+def test_gather_tets(tetrahedra: torch.Tensor):
+    n_tets = tetrahedra.shape[0]
+
+    tris, tet_tri, _ = get_subfaces(tetrahedra)
+    edges, tri_edge, _ = get_subfaces(tris)
+    tet_tri_edge = face_index(tri_edge, tet_tri)
+    face_ndim = 3
+
+    # Gathering scalars
+    data = torch.randn([edges.shape[0]])
+    expected = torch.zeros([n_tets, 4, 3])
+    for f in range(n_tets):
+        for t in range(4):  # triangle
+            for e in range(3):  # edge
+                expected[f, t, e] = data[tet_tri_edge[f, t, e]]
+    result = face_index(data, tet_tri_edge, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+    # Gathering vectors:
+    data = torch.randn([edges.shape[0], 3])
+    expected = torch.zeros([n_tets, 4, 3, 3])
+    for f in range(n_tets):
+        for t in range(4):  # triangle
+            for e in range(3):  # edge
+                for d in range(3):
+                    expected[f, t, e, d] = data[tet_tri_edge[f, t, e], d]
+    result = face_index(data, tet_tri_edge, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+    # Gathering batched vectors:
+    data = torch.randn([8, edges.shape[0], 3])
+    expected = torch.zeros([8, n_tets, 4, 3, 3])
+    for b in range(8):
+        for f in range(n_tets):
+            for t in range(4):  # triangle
+                for e in range(3):  # edge
+                    for d in range(3):
+                        expected[b, f, t, e, d] = data[b, tet_tri_edge[f, t, e], d]
+    result = face_index(data, tet_tri_edge.expand(8, -1, -1, -1), face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+
+def test_gather_tris(triangles: torch.Tensor):
+    n_verts = 6
+    n_tris = triangles.shape[0]
+    face_ndim = 2
+
+    # Equivalent of gathering vertex scalars onto triangles:
+    data = torch.randn([n_verts])
+    expected = torch.zeros([n_tris, 3])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            for d in range(3):
+                expected[f, c] = data[triangles[f, c]]
+    result = face_index(data, triangles, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    result = face_index(data, triangles)
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering batched vertex scalars onto triangles:
+    data = torch.randn([8, n_verts])
+    expected = torch.zeros([8, n_tris, 3])
+    for b in range(8):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                for d in range(3):
+                    expected[b, f, c] = data[b, triangles[f, c]]
+    result = face_index(data, triangles.expand(8, -1, -1), face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    result = face_index(data, triangles.expand(8, -1, -1))
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering vertex vectors onto triangles:
+    data = torch.randn([n_verts, 3])
+    expected = torch.zeros([n_tris, 3, 3])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            for d in range(3):
+                expected[f, c, d] = data[triangles[f, c], d]
+    result = face_index(data, triangles, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    result = face_index(data, triangles)
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering vertex matrices onto triangles:
+    data = torch.randn([n_verts, 3, 3])
+    expected = torch.zeros([n_tris, 3, 3, 3])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            for d in range(3):
+                expected[f, c, d] = data[triangles[f, c], d]
+    result = face_index(data, triangles, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    result = face_index(data, triangles)
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering vertex matrices onto triangles:
+    data = torch.randn([n_verts, 3, 3])
+    expected = torch.zeros([n_tris, 3, 3, 3])
+    for f in range(n_tris):
+        for c in range(3):  # corner
+            for d in range(3):
+                expected[f, c, d] = data[triangles[f, c], d]
+    result = face_index(data, triangles, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    result = face_index(data, triangles)
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering batched vertex matrices onto triangles:
+    data = torch.randn([8, n_verts, 3, 3])
+    expected = torch.zeros([8, n_tris, 3, 3, 3])
+    for b in range(8):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                for d in range(3):
+                    expected[b, f, c, d] = data[b, triangles[f, c], d]
+    result = face_index(data, triangles.expand(8, -1, -1), face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    result = face_index(data, triangles.expand(8, -1, -1))
+    torch.testing.assert_close(result, expected)
+
+
+def test_gather_verts():
+    isolated_verts = torch.tensor([0, 2, 4])
+    n_verts = 6
+    n_isolated_verts = isolated_verts.shape[0]
+    face_ndim = 1
+
+    # Equivalent of gathering vertex scalars onto other vertices:
+    data = torch.randn([n_verts])
+    expected = torch.zeros([n_isolated_verts])
+    for f in range(n_isolated_verts):
+        expected[f] = data[isolated_verts[f]]
+    result = face_index(data, isolated_verts, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    # result = face_index(data, isolated_verts)
+    # torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering batched vertex scalars onto other vertices:
+    data = torch.randn([8, n_verts])
+    expected = torch.zeros([8, n_isolated_verts])
+    for b in range(8):
+        for f in range(n_isolated_verts):
+            expected[b, f] = data[b, isolated_verts[f]]
+    result = face_index(data, isolated_verts.expand(8, -1), face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+    # Following cannot work because we do not know if a function is 8 faces
+    # with `n_verts` vertices each, or a batch of vertices with 8 batch elements.
+    # result = face_index(data, isolated_verts.expand(8, -1))
+    # torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering vertex vectors onto other vertices:
+    data = torch.randn([n_verts, 3])
+    expected = torch.zeros([n_isolated_verts, 3])
+    for f in range(n_isolated_verts):
+        for d in range(3):
+            expected[f, d] = data[isolated_verts[f], d]
+    result = face_index(data, isolated_verts, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+    # result = face_index(data, isolated_verts)
+    # torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering vertex vectors onto other vertices:
+    data = torch.randn([8, n_verts, 3])
+    expected = torch.zeros([8, n_isolated_verts, 3])
+    for b in range(8):
+        for f in range(n_isolated_verts):
+            for d in range(3):
+                expected[b, f, d] = data[b, isolated_verts[f], d]
+    result = face_index(data, isolated_verts.expand(8, -1), face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+    # Again, following cannot work because we do not know if a function is 8 faces
+    # with `n_verts` vertices each, or a batch of vertices with 8 batch elements.
+    # result = face_index(data, isolated_verts.expand(8, -1))
+    # torch.testing.assert_close(result, expected)
+
+
+def test_gather_single_vert():
+    # A one-element index is the case where `F` itself has size 1. There is no
+    # subface dimension to remove here, so `squeeze` must leave `F` alone.
+    single_vert = torch.tensor([2])
+    n_verts = 6
+    face_ndim = 1
+
+    # Equivalent of gathering vertex scalars onto a single vertex:
+    data = torch.randn([n_verts])
+    expected = torch.zeros([1])
+    expected[0] = data[single_vert[0]]
+    result = face_index(data, single_vert, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering batched vertex scalars onto a single vertex:
+    data = torch.randn([8, n_verts])
+    expected = torch.zeros([8, 1])
+    for b in range(8):
+        expected[b, 0] = data[b, single_vert[0]]
+    result = face_index(data, single_vert.expand(8, -1), face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+    # Equivalent of gathering vertex vectors onto a single vertex:
+    data = torch.randn([n_verts, 3])
+    expected = torch.zeros([1, 3])
+    for d in range(3):
+        expected[0, d] = data[single_vert[0], d]
+    result = face_index(data, single_vert, face_ndim=face_ndim)
+    torch.testing.assert_close(result, expected)
+
+    # A genuine `[F, FS]` index with `FS` == 1 does still get squeezed, though:
+    result = face_index(data, single_vert[:, None])
+    torch.testing.assert_close(result, expected)
+    result = face_index(data, single_vert[:, None], squeeze=False)
+    torch.testing.assert_close(result, expected[:, None, :])
+
+
+def test_gather_face_ndim_errors():
+    isolated_verts = torch.tensor([0, 2, 4])
+    n_verts = 6
+    data = torch.randn([n_verts])
+
+    # A 1D list of vertices has to be declared as such, we cannot guess it:
+    with pytest.raises(ValueError):
+        face_index(data, isolated_verts)
+
+    # `face_ndim` counts face dimensions, so it cannot exceed `faces.ndim`:
+    with pytest.raises(ValueError):
+        face_index(data, isolated_verts[:, None], face_ndim=3)
+
+    # Batch dimensions that disagree are reported rather than broadcast:
+    with pytest.raises(ValueError):
+        face_index(torch.randn([4, n_verts]), isolated_verts.expand(8, -1), face_ndim=1)
+
+
 def test_scatter(triangles: torch.Tensor):
     n_verts = 6
     n_tris = triangles.shape[0]
@@ -130,7 +365,7 @@ def test_scatter(triangles: torch.Tensor):
     )
     torch.testing.assert_close(result, expected)
 
-    # Equivalent of averaging face scalars on vertices:
+    # Equivalent of averaging face vectors on vertices:
     data, data_ndim = torch.randn([n_tris, 3]), 0
     expected = torch.zeros([n_verts])
     for f in range(n_tris):

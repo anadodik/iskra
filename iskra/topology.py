@@ -545,7 +545,11 @@ def ordered_boundary_vertices(edges: torch.Tensor) -> list[torch.Tensor]:
 
 
 def face_index(
-    data: torch.Tensor, faces: torch.Tensor, squeeze: bool = True
+    data: torch.Tensor,
+    faces: torch.Tensor,
+    *,
+    face_ndim: int = 2,
+    squeeze: bool = True,
 ) -> torch.Tensor:
     """Gathers subface values onto the faces that contain them.
 
@@ -570,16 +574,31 @@ def face_index(
         tensor-based scatter-gather framework.
 
     Args:
-        data (Tensor[DType, [S, Ds]]): Data with shape `[Ds]` stored on each
-            subface.
-        faces (Tensor[Int64, [F, FS]]): Face-to-subface indices.
-        squeeze: If `FS` == 0 (i.e. the list of faces is just
-            a 1D list of vertices) `squeeze` dictates whether the output
+        data (Tensor[DType, [Bs, S, Ds]]): Data stored on each subface.
+        faces (Tensor[Int64, [Bs, F] | [Bs, F, FS] | [Bs, F, FSs]]): Face-to-subface
+            indices, possibly nested. See examples below.
+        face_ndim (int): The dimensionality of the face index. By default
+            the function assumes it is working with (possibly batched) face-vertex
+            relations, which are stored as `2D` tensors. Hence `face_ndim=2` by default.
+            If we were, e.g., gathering from vertices using a nested tet-tri-vert index
+            we would specify `faces_ndim=3` and for a 1D list of vertices `face_ndim=1`.
+        squeeze (bool): If faces shape is `[Bs, F, FS]` and `FS` == 1 (i.e. the list of
+            faces is a 1D list of vertices), `squeeze` dictates whether the output
             will have the size-1 dimension corresponding to the face vertices
-            squeezed. Default: `True`.
+            squeezed. If faces shape is already `[Bs, F]`, `squeeze` does nothing.
+            Default: `True`.
+
+    Raises:
+        ValueError: Throws an exception if `faces.ndim` is smaller than `face_ndim`.
+            Everything to the left of the face index is read as the batch, so, e.g.,
+            handing a 1D list of vertices to the default `face_ndim=2` would ask for
+            `-1` batch dimensions. We have to specify `face_ndim=1` instead.
+        ValueError: Throws an exception if the batch dimensions of `faces` and `data`
+            disagree. It is `face_ndim` that decides where the batch stops and the
+            face index starts, so this usually means `face_ndim` is wrong.
 
     Returns:
-        An Tensor with the shape `[F, Ds]`.
+        An Tensor with the shape `[Bs, F, FSs, Ds]`.
 
     Example:
         .. csv-table::
@@ -590,15 +609,43 @@ def face_index(
             "`[V, 3]`", "`[Tris, 3]`", "`[Tris, 3, 3]`", "3D triangle positions"
             "`[V, 3]`", "`[Tets, 4]`", "`[Tets, 4, 3]`", "3D tet positions"
             "`[V, 4]`", "`[Tets, 4]`", "`[Tets, 4, 4]`", "4D tet positions"
+            "`[E, 2, 2]`", "`[Tets, 4, 3]`", "`[Tets, 4, 3, 2, 2]`", "2x2 tet-tri-edge matrices."
 
-        This works with higher dimensional indices too.
+        Next, assume a face tensor with the size of `[8, 4]`. There is no way to know
+        whether this is `8` polygons with `4` corners each or whether an batch of `8`
+        1D vectors of vertex indices. This function always assumes the first, i.e., it
+        assumes it is working with a face-vertex input. To change the default and have
+        the function interpret `8` as a batch dimension, we have to be explicit and
+        specify the face-index is 1D, i.e., face_ndim=1.
     """
-    if faces.ndim == 1:
-        faces = faces[:, None]
+    if faces.ndim < face_ndim:
+        raise ValueError(
+            f"faces.shape={faces.shape} ({len(faces.shape)} dims), but "
+            f"face_ndim={face_ndim}. face_ndim must be bigger than number of face dims."
+        )
 
-    result_shape = faces.shape + data.shape[1:]
-    result = data[faces.flatten(), ...].reshape(result_shape)
-    if squeeze and faces.shape[-1] == 1:
+    batch_ndim = faces.ndim - face_ndim
+    data_shape = data.shape[batch_ndim + 1 :]
+    data_ndim = len(data_shape)
+    result_shape = faces.shape + data_shape
+
+    face_batches = faces.shape[:batch_ndim]
+    data_batches = data.shape[:batch_ndim]
+    if face_batches != data_batches:
+        raise ValueError(
+            "Face batch dimensions do not match data batch dimensions. "
+            f"This is likely due to an incorrect face_ndim (={face_ndim}) argument."
+        )
+
+    # The following is basically a fancy way of writing the following,
+    # but in a way that supports batching:
+    # result = data[faces.flatten(), ...].reshape(result_shape)
+    index = faces.flatten(batch_ndim, -1)
+    index = index[..., *((None,) * data_ndim)]
+    index = index.expand(*((-1,) * (batch_ndim + 1)), *data_shape)
+    result = torch.gather(data, batch_ndim, index).reshape(result_shape)
+
+    if squeeze and face_ndim >= 2 and faces.shape[-1] == 1:
         result = result.squeeze(faces.ndim - 1)
 
     return result
@@ -609,6 +656,7 @@ def reduce_on_subface(
     faces: torch.Tensor,
     n_subfaces: int,
     reduce: Literal["sum", "prod", "mean", "amax", "amin"],
+    *,
     data_ndim: int | None = None,
     batch_ndim: int = 0,
 ) -> torch.Tensor:

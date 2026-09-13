@@ -137,7 +137,8 @@ class Geometry(torch.nn.Module):
 
     def __getitem__(self, faces: torch.Tensor) -> torch.Tensor:
         if isinstance(faces, torch.Tensor):
-            return face_index(self.vertices, faces)
+            # An unbatched geometry: every dimension of `faces` is a face dim.
+            return face_index(self.vertices, faces, face_ndim=faces.ndim)
         else:
             return self.vertices[faces]
 
@@ -162,7 +163,7 @@ class Geometry(torch.nn.Module):
 
     @property
     def isolated_vertices(self) -> torch.Tensor:
-        return face_index(self.vertices, self.topo.isolated_vertices)
+        return face_index(self.vertices, self.topo.isolated_vertices, face_ndim=1)
 
     @property
     def area_face_normals(self) -> torch.Tensor:
@@ -281,7 +282,7 @@ class Mesh(torch.nn.Module):
         device = faces.device
 
         vertex_idcs: torch.Tensor = faces.reshape(-1).unique()  # type: ignore
-        vertices = face_index(self.geom.vertices, vertex_idcs)
+        vertices = face_index(self.geom.vertices, vertex_idcs, face_ndim=1)
 
         new_vertex_idcs = torch.arange(vertex_idcs.shape[0], device=device)
         inv_idx = torch.empty(self.n_vertices, dtype=torch.long, device=device)

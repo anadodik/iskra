@@ -200,7 +200,7 @@ class SkinningHandles(torch.nn.Module):
 
     @property
     def rest_points(self) -> torch.Tensor:
-        return face_index(self.rest_vertices, self.point_handle_idx)
+        return face_index(self.rest_vertices, self.point_handle_idx, face_ndim=1)
 
     @property
     def rest_bones(self) -> torch.Tensor:
@@ -208,7 +208,7 @@ class SkinningHandles(torch.nn.Module):
 
     @property
     def points(self) -> torch.Tensor:
-        return face_index(self.vertices, self.point_handle_idx)
+        return face_index(self.vertices, self.point_handle_idx, face_ndim=1)
 
     @property
     def bones(self) -> torch.Tensor:
@@ -363,7 +363,7 @@ def handles_to_transforms(
         # .obj files, but the line-segment order is free to change.
         # For this reason, we must use the index of the original handles,
         # not the deformed handles (i.e. frame.bones is not guaranteed to work).
-        points = face_index(frame.vertices, handles.point_handle_idx)
+        points = face_index(frame.vertices, handles.point_handle_idx, face_ndim=1)
         bones = face_index(frame.vertices, handles.bone_handle_idx)
         point_transform = transform_from_points(rest_points, points)
         inv_rest_bones_transform, bones_transform = transform_from_bones(
