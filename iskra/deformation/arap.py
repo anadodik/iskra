@@ -49,7 +49,7 @@ def arap_step(
         lines_deformed = face_index(verts_deformed, vert_vert)
         vecs_deformed = lines_deformed[..., 1, :] - lines_deformed[..., 0, :]
         covs = cots[..., None, None] * vecs_deformed[..., None, :] * vecs[..., :, None]
-        vert_covs = reduce_on_subface(covs, vert_vert[:, 0:1], n_vertices, "sum")
+        vert_covs = reduce_on_subface(covs, vert_vert[..., 0:1], n_vertices, "sum")
 
     with profile_block("svd"):
         vert_rot = closest_rot_3x3(vert_covs)
@@ -58,7 +58,7 @@ def arap_step(
         halfedge_rot = face_index(vert_rot.mT, vert_vert).mean(-3)
         rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
         rhs = reduce_on_subface(
-            rotated_halfedge_vecs, vert_vert[:, 0:1], n_vertices, "sum"
+            rotated_halfedge_vecs, vert_vert[..., 0:1], n_vertices, "sum"
         )
 
     with profile_block("solve"):
@@ -114,7 +114,7 @@ def arap_step_with_energy(
         cots[..., None, None] * vecs_deformed[..., None, :] * vecs[..., :, None]
     )
 
-    vert_covs = reduce_on_subface(halfedge_covs, vert_vert[:, 0:1], n_vertices, "sum")
+    vert_covs = reduce_on_subface(halfedge_covs, vert_vert[..., 0:1], n_vertices, "sum")
     # Uncomment to debug SVD:
     # vert_u, _, vert_vt = signed_svd(vert_covs)
     # vert_rot = vert_vt.mT @ vert_u.mT
@@ -129,13 +129,17 @@ def arap_step_with_energy(
     diff = vecs_deformed - (halfedge_vert_rot @ vecs[..., None])[..., 0]
     weighted_dist = cots * torch.linalg.vector_norm(diff, dim=-1, ord=2) ** 2
 
-    vert_energy = reduce_on_subface(weighted_dist, vert_vert[:, 0:1], n_vertices, "sum")
+    vert_energy = reduce_on_subface(
+        weighted_dist, vert_vert[..., 0:1], n_vertices, "sum"
+    )
 
     # THIS IS INTERPOLATING ROTATIONS WEIRDLY??? SHRINKWRAP ARTIFACTS?
     halfedge_rot = face_index(vert_rot.mT, vert_vert).mean(-3)
     rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
 
-    rhs = reduce_on_subface(rotated_halfedge_vecs, vert_vert[:, 0:1], n_vertices, "sum")
+    rhs = reduce_on_subface(
+        rotated_halfedge_vecs, vert_vert[..., 0:1], n_vertices, "sum"
+    )
     _, verts_deformed = spla.min_quadratic_energy(
         lap, -rhs, bc_idx, bc_vals, solver=solver
     )

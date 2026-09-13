@@ -444,7 +444,7 @@ def test_batched_scatter(triangles: torch.Tensor):
             for c in range(3):  # corner
                 expected[b, triangles[b, f, c]] += data[b, f]
     result = reduce_on_subface(
-        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
     )
     torch.testing.assert_close(result, expected)
 
@@ -456,7 +456,7 @@ def test_batched_scatter(triangles: torch.Tensor):
             for c in range(3):  # corner
                 expected[b, triangles[b, f, c]] += data[b, f, c]
     result = reduce_on_subface(
-        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
     )
     torch.testing.assert_close(result, expected)
 
@@ -469,7 +469,7 @@ def test_batched_scatter(triangles: torch.Tensor):
                 for d in range(data.shape[-data_ndim]):
                     expected[b, triangles[b, f, c], d] += data[b, f, d]
     result = reduce_on_subface(
-        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
     )
     torch.testing.assert_close(result, expected)
 
@@ -482,7 +482,7 @@ def test_batched_scatter(triangles: torch.Tensor):
                 for d in range(data.shape[-data_ndim]):
                     expected[b, triangles[b, f, c], d] += data[b, f, c, d]
     result = reduce_on_subface(
-        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
     )
     torch.testing.assert_close(result, expected)
 
@@ -501,6 +501,51 @@ def test_batched_scatter(triangles: torch.Tensor):
                 for ds in data_iter:
                     expected[b, triangles[b, f, c], *ds] += data[b, f, *ds]
     result = reduce_on_subface(
-        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim, batch_ndim=1
+        data, triangles, n_verts, reduce="sum", data_ndim=data_ndim
     )
     torch.testing.assert_close(result, expected)
+
+
+def test_scatter_greedy_batched(triangles: torch.Tensor):
+    # With `batch_ndim` derived from `face_ndim`, the greedy `data_ndim` default
+    # accounts for the batch.
+    batch_size = 16
+    n_verts = 6
+    n_tris = triangles.shape[0]
+    triangles = triangles[None, :, :].expand(batch_size, -1, -1)
+
+    # Equivalent of averaging face normals on vertices, without saying data_ndim:
+    data = torch.randn([batch_size, n_tris, 3])
+    expected = torch.zeros([batch_size, n_verts, 3])
+    for b in range(batch_size):
+        for f in range(n_tris):
+            for c in range(3):  # corner
+                for d in range(3):
+                    expected[b, triangles[b, f, c], d] += data[b, f, d]
+    result = reduce_on_subface(data, triangles, n_verts, reduce="sum")
+    torch.testing.assert_close(result, expected)
+
+
+def test_scatter_face_ndim_errors(triangles: torch.Tensor):
+    n_verts = 6
+    n_tris = triangles.shape[0]
+
+    # A 1D list of vertices has to be declared as such, we cannot guess it:
+    with pytest.raises(ValueError):
+        reduce_on_subface(torch.randn([n_tris]), triangles[:, 0], n_verts, "sum")
+
+    # Batch dimensions that disagree are reported rather than broadcast:
+    with pytest.raises(ValueError):
+        reduce_on_subface(
+            torch.randn([4, n_tris]),
+            triangles.expand(8, -1, -1),
+            n_verts,
+            "sum",
+            data_ndim=0,
+        )
+
+    # `data_ndim` has to leave at least one face dimension in the data:
+    with pytest.raises(ValueError):
+        reduce_on_subface(
+            torch.randn([n_tris, 3]), triangles, n_verts, "sum", data_ndim=2
+        )

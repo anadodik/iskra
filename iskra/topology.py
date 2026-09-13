@@ -581,7 +581,7 @@ def face_index(
             the function assumes it is working with (possibly batched) face-vertex
             relations, which are stored as `2D` tensors. Hence `face_ndim=2` by default.
             If we were, e.g., gathering from vertices using a nested tet-tri-vert index
-            we would specify `faces_ndim=3` and for a 1D list of vertices `face_ndim=1`.
+            we would specify `face_ndim=3` and for a 1D list of vertices `face_ndim=1`.
         squeeze (bool): If faces shape is `[Bs, F, FS]` and `FS` == 1 (i.e. the list of
             faces is a 1D list of vertices), `squeeze` dictates whether the output
             will have the size-1 dimension corresponding to the face vertices
@@ -621,7 +621,8 @@ def face_index(
     if faces.ndim < face_ndim:
         raise ValueError(
             f"faces.shape={faces.shape} ({len(faces.shape)} dims), but "
-            f"face_ndim={face_ndim}. face_ndim must be bigger than number of face dims."
+            f"face_ndim={face_ndim}. face_ndim must not be bigger than number "
+            "of face dims."
         )
 
     batch_ndim = faces.ndim - face_ndim
@@ -657,8 +658,8 @@ def reduce_on_subface(
     n_subfaces: int,
     reduce: Literal["sum", "prod", "mean", "amax", "amin"],
     *,
+    face_ndim: int = 2,
     data_ndim: int | None = None,
-    batch_ndim: int = 0,
 ) -> torch.Tensor:
     """Scatter-reduce data from faces onto constitutive subfaces.
 
@@ -671,26 +672,36 @@ def reduce_on_subface(
     is then, e.g., averaged onto each edge with the values of
     the other triangles that share that same edge.
 
+    The `faces` tensor is a (batched) tensor of (nested) faces, where the number of face
+    dimension equals `face_ndim`, and the number of batch dimensions is equal to
+    `batch_ndim = faces.ndim - face_ndim`.
+
     The function slices up the data tensor into three parts: `[Bs, Fs, Ds]`,
     where `Bs` is the batch shape, `Ds` are the data payload dimensions;
     `Fs` represents the "domain" of the data.
-    Most commonly `Fs` is either `[F]` or `[F, FS]`.
-    For example, on a triangle mesh, `Fs = [F]` implies one data payload
-    per triangle, whereas `Fs = [F, 3]` implies one data payload per
-    triangle-corner or triangle-side.
+    On a triangle mesh, `Fs = [F]` implies one data payload per triangle, whereas
+    `Fs = [F, 3]` implies one data payload per triangle-corner or triangle-side.
 
-    Data dimensions are greedy when `data_ndim` is `None`: we assume
-    `Fs = [F]` and that everything to the right of `Fs` is the data payload.
+    Length of `Ds` is specified by `data_ndim`.
+    Data dimensions are greedy when `data_ndim` is `None`: by default (and at minimum),
+    we assume `Fs = [F]` and that everything to the right of `Fs` is the data payload.
+    If `data_ndim` is specified, `Fs` can expand.
     E.g., if `data.shape = [B, F, 3, 3]` and `Fs = [F]`, we have one data
-    payload per face, whereas if `Fs = [F, 3]`, we have one data payload per
-    triangle-corner.
+    payload per face, whereas if we set `data_ndim=1`, then `Fs = [F, 3]` and we
+    have one data payload per triangle-corner. See more concrete examples below.
+
+    Tip:
+        `Fs` represents the size of the source domain where the data is defined,
+        whereas `faces` tells us how that source domain connects to the target domain
+        below it, and `faces_ndim` is simply there to disambiguate batch dimensions.
 
     Caution:
-        The function should generalize to nested subfaces indices, i.e.,
-        `Fs=[F, FSs]`. For example, it should handle data defined on a
-        tetrahedron's side-triangles' corners (`Fs=[Tets, 3, 3]`), but
-        this is untested! If you have a real-world example of data stored
-        on subfaces of subfaces, let me know and I can look into it!
+        Note that `Fs` is *not* the same as `face_ndim`, `face_ndim` specifies how many
+        dimensions corresponding to the mesh domain there are in `faces`,
+        and therefore implicitly the number of batch dimensions as
+        `batch_ndim = faces.ndim - face_ndim`. This is preferrable to specifying
+        `batch_ndim` as an argument because it lets the function work both on batched
+        and unbatched inputs.
 
     Tip:
         This function is one of the three building blocks of `iskra`'s
@@ -706,15 +717,31 @@ def reduce_on_subface(
     Args:
         data (Tensor[DType, [Bs, Fs, Ds]]): Data defined on mesh faces
             (`Fs=[F]`) or face-subfaces (`Fs=[F, FS]`).
-        faces (Tensor[Int64, [Bs, F, FS]]): Face-subface indices.
+        faces (Tensor[Int64, [Bs, F] | [Bs, F, FS] | [Bs, F, FSs]]): Face-subface
+            indices, possibly nested.
         n_subfaces (int): Total number of subfaces in the mesh (e.g., total
             number of vertices or edges in a triangle mesh).
         reduce (Literal["sum", "prod", "mean", "amax", "amin"]): Reduction
             operation, see `torch.scatter_reduce()` for more details.
+        face_ndim (int): The dimensionality of the face index. By default
+            the function assumes it is working with (possibly batched) face-vertex
+            relations, which are stored as `2D` tensors. Hence `face_ndim=2` by default.
+            If we were, e.g., gathering from vertices using a nested tet-tri-vert index
+            we would specify `face_ndim=3` and for a 1D list of vertices `face_ndim=1`.
         data_ndim (int | None): Num. dimensions of the per-face
             (or per-face-subface) payload. See above for more details
             on default behavior.
-        batch_ndim (int): Num. batch dimensions.
+
+    Raises:
+        ValueError: Throws an exception if `faces.ndim` is smaller than `face_ndim`.
+            Everything to the left of the face index is read as the batch, so, e.g.,
+            handing a 1D list of vertices to the default `face_ndim=2` would ask for
+            `-1` batch dimensions. We have to specify `face_ndim=1` instead.
+        ValueError: Throws an exception if the batch dimensions of `faces` and `data`
+            disagree. It is `face_ndim` that decides where the batch stops and the
+            face index starts, so this usually means `face_ndim` is wrong.
+        ValueError: Throws error if `data_ndim` is negative, or big enough
+            to leave no face dimension in `data`.
 
     Returns:
         Tensor[DType, [Bs, S, Ds]]: Data reduced onto the `S` subfaces,
@@ -733,12 +760,31 @@ def reduce_on_subface(
             "`[B, F, 3, 3]`", "`[B, F, 3]`", "`1`", "`[B, V, 3]`", "corner normals → vertices"
             "`[B, F, 3, 3]`", "`[B, F, 3]`", "`2` | `None`", "`[B, V, 3, 3]`", "face covariances → vertices"
     """
+    if faces.ndim < face_ndim:
+        raise ValueError(
+            f"faces.shape={faces.shape} ({len(faces.shape)} dims), but "
+            f"face_ndim={face_ndim}. face_ndim must not be bigger than number "
+            "of face dims."
+        )
+
+    batch_ndim = faces.ndim - face_ndim
+
     # Data dims is assumed to be greedy by default, i.e.,
     # we assume everything that is to the right of the face index is part
     # of the data payload.
     if data_ndim is None:
         data_ndim = data.ndim - 1 - batch_ndim
     assert data_ndim is not None  # for type checking
+
+    if not 0 <= data_ndim < data.ndim - batch_ndim:
+        raise ValueError(
+            f"data_ndim={data_ndim} must be non-negative and not smaller than "
+            f"data_ndim={data.ndim}, excluding the initial batch dimensions "
+            f"(detected {batch_ndim} batch dimensions), "
+            f"i.e., it must be smaller than {data.ndim - batch_ndim}. "
+            f"Got data.shape={data.shape}, faces.shape={faces.shape}, "
+            f"face_ndim={face_ndim}, data_ndim={data_ndim}."
+        )
 
     flatten_scalar_dim = False
     if data_ndim == 0:
@@ -750,9 +796,25 @@ def reduce_on_subface(
     batch_shape = data.shape[:batch_ndim]
     # matched_ndim, first n dims that are shared between data and faces:
     matched_ndim = data.ndim - data_ndim
-    assert data.shape[:matched_ndim] == faces.shape[:matched_ndim]
+    if data.shape[:matched_ndim] != faces.shape[:matched_ndim]:
+        raise ValueError(
+            "data must match faces in the batch + face dimensions. "
+            f"Got data.shape[:matched_ndim]={data.shape[:matched_ndim]}, "
+            f"faces.shape[:matched_ndim]={faces.shape[:matched_ndim]}, "
+            f"face_ndim={face_ndim}, data_ndim={data_ndim}, "
+            f"matched_ndim=data.ndim - data_ndim ({data.ndim - data_ndim})."
+        )
 
     result_shape = (*batch_shape, n_subfaces, *data_shape)
+    # TODO: `scatter_reduce` runs with `include_self=True`, so these initial zeros
+    # take part in the reduction. Only `reduce="sum"` is correct today.
+    # _reduce_inits = {
+    #     "sum": 0,
+    #     "prod": 1,
+    #     "mean": 0,
+    #     "amax": -float("inf"),
+    #     "amin": float("inf"),
+    # }
     result = torch.zeros(result_shape, dtype=data.dtype, device=data.device)
     subface_gen = itertools.product(
         *(range(faces.shape[dim]) for dim in range(batch_ndim + 1, faces.ndim))

@@ -62,7 +62,7 @@ def arap_step(
         lines_deformed = face_index(verts_deformed, vert_vert)
         vecs_deformed = lines_deformed[..., 1, :] - lines_deformed[..., 0, :]
         covs = cots[..., None, None] * vecs_deformed[..., None, :] * vecs[..., :, None]
-        vert_covs = reduce_on_subface(covs, vert_vert[:, 0:1], n_vertices, "sum")
+        vert_covs = reduce_on_subface(covs, vert_vert[..., 0:1], n_vertices, "sum")
 
     with profile_block("svd"):
         vert_rot = closest_rot_3x3(vert_covs)
@@ -71,7 +71,7 @@ def arap_step(
         halfedge_rot = face_index(vert_rot.mT, vert_vert).mean(-3)
         rotated_halfedge_vecs = cots[:, None] * (halfedge_rot @ vecs[..., None])[..., 0]
         rhs = reduce_on_subface(
-            rotated_halfedge_vecs, vert_vert[:, 0:1], n_vertices, "sum"
+            rotated_halfedge_vecs, vert_vert[..., 0:1], n_vertices, "sum"
         )
 
     with profile_block("solve"):

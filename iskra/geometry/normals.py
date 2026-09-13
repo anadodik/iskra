@@ -184,7 +184,9 @@ def vertex_normals(
             face_normals = torch.nn.functional.normalize(volume_normals, dim=-1)
             angles = interior_angles(simplices, signed=False, face_normals=face_normals)
             angle_normals = angles[..., :, None] * face_normals[..., None, :]
-            normals = reduce_on_subface(angle_normals, faces, verts.shape[0], "sum", 1)
+            normals = reduce_on_subface(
+                angle_normals, faces, verts.shape[0], "sum", data_ndim=1
+            )
         elif method == "graph":
             face_normals = torch.nn.functional.normalize(volume_normals, dim=-1)
             normals = reduce_on_subface(face_normals, faces, verts.shape[0], "sum")
