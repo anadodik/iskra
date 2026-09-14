@@ -5,45 +5,18 @@ from argparse import ArgumentParser
 import torch
 
 from iskra.dec import laplacian
-from iskra.geometry import triangle_areas, triangle_coordinate_system
+from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
+from iskra.parameterization import (
+    symmetric_dirichlet_energy,
+    triangle_to_local,
+    uv_local,
+)
 from iskra.sparse_linalg import default_solver, min_quadratic_energy
 from iskra.topology import boundary, face_index, get_subfaces, ordered_boundary_edges
 
-
-def triangle_to_local(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    triangles = face_index(verts, faces)
-    _, t, b = triangle_coordinate_system(triangles)
-    edge_vecs = triangles[..., 1:, :] - triangles[..., 0:1, :]
-    world_to_local = torch.stack([t, b], -2)
-    local = world_to_local @ edge_vecs.mT
-    return local
-
-
-def uv_local(uv: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    # Do not project on a local coordinate frame because that will
-    # leave us not knowing if there is a flip or not!
-    triangles = face_index(uv, faces)
-    edge_vecs = triangles[..., 1:, :] - triangles[..., 0:1, :]
-    return edge_vecs.mT
-
-
-def symmetric_dirichlet(
-    rest_local: torch.Tensor, param_local: torch.Tensor, rest_areas: torch.Tensor
-) -> torch.Tensor:
-    # TODO: Can you do HVP? Replace vmap with vertmap?
-    jac = param_local @ torch.linalg.inv(rest_local)
-    energy_fwd = (jac**2).sum((-2, -1))
-    energy_bwd = (torch.linalg.inv(jac) ** 2).sum((-2, -1))
-    energy = rest_areas * (energy_fwd + energy_bwd)
-
-    is_flipped = torch.linalg.det(param_local.mT) <= 0
-    energy = torch.where(is_flipped, float("inf"), energy)
-    return energy
-
-
-symmetric_dirichlet = torch.compile(
-    torch.vmap(symmetric_dirichlet, (0, 0, 0)), fullgraph=True, dynamic=True
+symmetric_dirichlet_energy = torch.compile(
+    torch.vmap(symmetric_dirichlet_energy, (0, 0, 0)), fullgraph=True, dynamic=True
 )
 
 
@@ -111,12 +84,12 @@ if __name__ == "__main__":
     h1_solver = default_solver(mass + 0.5 * lap)
 
     param_local = uv_local(uv_opt, faces)
-    energy = symmetric_dirichlet(rest_local, param_local, rest_areas)
+    energy = symmetric_dirichlet_energy(rest_local, param_local, rest_areas)
     quit()
 
     def step_fn():
         param_local = uv_local(uv_opt, faces)
-        energy = symmetric_dirichlet(rest_local, param_local, rest_areas)
+        energy = symmetric_dirichlet_energy(rest_local, param_local, rest_areas)
         energy.mean().backward()
         with torch.no_grad():
             if uv_opt.grad is None:
@@ -126,13 +99,13 @@ if __name__ == "__main__":
             grad = h1_solver(mass @ uv_opt.grad)
             grad -= grad.mean(0, keepdim=True)
 
-            energy_new = symmetric_dirichlet(
+            energy_new = symmetric_dirichlet_energy(
                 rest_local, uv_local(uv_opt - lr * uv_opt.grad, faces), rest_areas
             )
             n_shrinks = 0
             while energy_new.mean() > energy.mean():
                 grad *= 0.1
-                energy_new = symmetric_dirichlet(
+                energy_new = symmetric_dirichlet_energy(
                     rest_local, uv_local(uv_opt - lr * grad, faces), rest_areas
                 )
                 n_shrinks += 1

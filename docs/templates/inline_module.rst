@@ -1,10 +1,10 @@
-{{ fullname | escape | underline}}
+{{ ("``" + fullname + "``") | underline }}
 
 .. automodule:: {{ fullname }}
 
 {% if classes %}
 .. autosummary::
-   :toctree:
+   :toctree: generated
 
 {% for item in classes %}
    {{ item }}
@@ -13,8 +13,8 @@
 
 {% if functions %}
 .. autosummary::
-   :toctree:
-   
+   :toctree: generated
+
 {% for item in functions %}
    {{ item }}
 {%- endfor %}

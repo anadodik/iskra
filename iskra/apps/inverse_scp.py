@@ -5,60 +5,19 @@ from argparse import ArgumentParser
 import numpy as np
 import torch
 
-import iskra.sparse as sp
 from iskra.dec import laplacian
-from iskra.geometry import triangle_areas, triangle_coordinate_system
+from iskra.geometry import triangle_areas
 from iskra.mesh import Mesh
-from iskra.sparse_linalg import default_solver, eigsh
-from iskra.topology import boundary, face_index, get_subfaces
-
-
-def triangle_to_local(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    triangles = face_index(verts, faces)
-    _, t, b = triangle_coordinate_system(triangles)
-    edge_vecs = triangles[..., 1:, :] - triangles[..., 0:1, :]
-    world_to_local = torch.stack([t, b], -2)
-    local = world_to_local @ edge_vecs.mT
-    return local
-
-
-def uv_local(uv: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    # Do not project on a local coordinate frame because that will
-    # leave us not knowing if there is a flip or not!
-    triangles = face_index(uv, faces)
-    edge_vecs = triangles[..., 1:, :] - triangles[..., 0:1, :]
-    return edge_vecs.mT
-
-
-def symmetric_dirichlet(
-    rest_local: torch.Tensor, param_local: torch.Tensor
-) -> torch.Tensor:
-    jac = param_local @ torch.linalg.inv(rest_local)
-    energy_fwd = (jac**2).sum((-2, -1))
-    energy_bwd = (torch.linalg.inv(jac) ** 2).sum((-2, -1))
-    energy = rest_areas * (energy_fwd + energy_bwd)
-
-    is_flipped = torch.linalg.det(param_local.mT) <= 0
-    # if is_flipped.count_nonzero() > 0:
-    #     print(f"Flipped {is_flipped.count_nonzero()} triangles.")
-    energy[is_flipped] = float("inf")
-    return energy
-
-
-def vertex_area_matrix(
-    n_vertices: int, faces: torch.Tensor, dtype: torch.dtype = torch.float32
-) -> torch.Tensor:
-    bdr_edges = boundary(faces)
-    bdr_edges_bwd = bdr_edges[:, (1, 0)]
-    n_bdr_edges = bdr_edges.shape[0]
-    idcs_i = torch.cat([bdr_edges, bdr_edges_bwd + n_vertices], -2).flatten(-2, -1)
-    idcs_j = torch.cat([bdr_edges_bwd + n_vertices, bdr_edges], -2).flatten(-2, -1)
-    values = torch.tensor([0.25, -0.25], device=faces.device, dtype=dtype)
-    values = values[None, :].expand(2 * n_bdr_edges, -1).flatten(-2, -1)
-    return sp.coo_tensor(
-        torch.stack([idcs_i, idcs_j], -2), values, size=[2 * n_vertices, 2 * n_vertices]
-    )
-
+from iskra.parameterization import (
+    boundary_matrix,
+    conformal_laplacian,
+    scp_solve,
+    symmetric_dirichlet_energy,
+    triangle_to_local,
+    uv_local,
+)
+from iskra.sparse_linalg import default_solver
+from iskra.topology import face_index, get_subfaces
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Demonstrates an inverse SCP parameterization.")
@@ -72,21 +31,12 @@ if __name__ == "__main__":
     faces, verts = mesh.topo.faces, mesh.geom.vertices
 
     edges, face_edges, face_edge_sign = get_subfaces(faces)
-    bdr_idx = boundary(faces).flatten().unique()
 
-    vertex_area = vertex_area_matrix(mesh.n_vertices, mesh.faces, dtype=dtype)
-    bdr_ii = torch.stack([bdr_idx, bdr_idx], 0)
-    bdr_val = torch.ones(bdr_ii.shape[1], dtype=dtype, device=device)
-    rhs_block = sp.coo_tensor(bdr_ii, bdr_val, size=[mesh.n_vertices, mesh.n_vertices])
-    rhs = sp.repdiag(rhs_block, 2)
+    boundary_mat = boundary_matrix(mesh.n_vertices, faces, dtype=dtype)
 
     def compute_scp(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-        lap, _ = laplacian(verts, faces, clamp_min=1e-8)
-        lhs = sp.repdiag(lap, 2) - 2 * vertex_area
-        evals, evecs = eigsh(lhs, M=rhs, k=4, sigma=-1e-12, bwd_method="individual")
-        print(f"Difference between eigenvalues: {evals[2] - evals[3]}")
-        uv_opt = evecs[:, 2:3].reshape(2, -1).mT
-        return uv_opt
+        conformal_lap = conformal_laplacian(verts, faces, clamp_min=1e-8)
+        return scp_solve(conformal_lap, boundary_mat)
 
     rest_local = triangle_to_local(verts, faces)
     rest_areas = triangle_areas(face_index(verts, faces))
@@ -101,7 +51,7 @@ if __name__ == "__main__":
     def step_fn():
         uv_opt = compute_scp(verts_opt, faces)
         param_local = uv_local(uv_opt, faces)
-        energy = symmetric_dirichlet(rest_local, param_local)
+        energy = symmetric_dirichlet_energy(rest_local, param_local, rest_areas)
         energy.mean().backward()
         print(energy.mean())
         with torch.no_grad():
@@ -135,7 +85,7 @@ if __name__ == "__main__":
     with torch.no_grad():
         uv_opt = compute_scp(verts_opt, faces)
         param_local = uv_local(uv_opt, faces)
-        # energy = symmetric_dirichlet(rest_local, param_local)
+        # energy = symmetric_dirichlet(rest_local, param_local, rest_areas)
     try:
         import polyscope as ps
 
@@ -188,7 +138,9 @@ if __name__ == "__main__":
                     optimizer.step()
                     uv_opt = compute_scp(verts_opt, faces)
                     param_local = uv_local(uv_opt, faces)
-                    energy = symmetric_dirichlet(rest_local, param_local)
+                    energy = symmetric_dirichlet_energy(
+                        rest_local, param_local, rest_areas
+                    )
 
                     # ps_mesh.update_vertex_positions(verts_opt.detach().numpy())
                     ps_param_mesh.update_vertex_positions(uv_opt.detach().numpy())

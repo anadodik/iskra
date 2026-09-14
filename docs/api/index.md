@@ -12,6 +12,7 @@ adjoint
 random
 directional
 deformation
+parameterization
 io
 signed_svd
 skinning

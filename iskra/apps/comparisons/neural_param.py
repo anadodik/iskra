@@ -6,63 +6,23 @@ from pathlib import Path
 import numpy as np
 import torch
 
-import iskra.sparse as sp
 from iskra import dec
-from iskra.geometry import triangle_areas, triangle_coordinate_system
+from iskra.geometry import triangle_areas
 from iskra.geometry.cotan_weights import cotan_weights, cotan_weights_intrinsic
 from iskra.geometry.volume import edge_lengths
 from iskra.harmonic_embedding import HarmonicEmbedding
 from iskra.mesh import Mesh
 from iskra.mlp import MLP, NetworkConfig
-from iskra.sparse_linalg import default_solver, eigsh
-from iskra.topology import boundary, face_index, get_subfaces
-
-
-def triangle_to_local(verts: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    triangles = face_index(verts, faces)
-    _, t, b = triangle_coordinate_system(triangles)
-    edge_vecs = triangles[..., 1:, :] - triangles[..., 0:1, :]
-    world_to_local = torch.stack([t, b], -2)
-    local = world_to_local @ edge_vecs.mT
-    return local
-
-
-def uv_local(uv: torch.Tensor, faces: torch.Tensor) -> torch.Tensor:
-    # Do not project on a local coordinate frame because that will
-    # leave us not knowing if there is a flip or not!
-    triangles = face_index(uv, faces)
-    edge_vecs = triangles[..., 1:, :] - triangles[..., 0:1, :]
-    return edge_vecs.mT
-
-
-def symmetric_dirichlet(
-    rest_local: torch.Tensor, param_local: torch.Tensor, rest_areas: torch.Tensor
-) -> torch.Tensor:
-    jac = param_local @ torch.linalg.inv(rest_local)
-    energy_fwd = (jac**2).sum((-2, -1))
-    energy_bwd = (torch.linalg.inv(jac) ** 2).sum((-2, -1))
-    energy = rest_areas * (energy_fwd + energy_bwd)
-
-    is_flipped = torch.linalg.det(param_local.mT) <= 0
-    # if is_flipped.count_nonzero() > 0:
-    #     print(f"Flipped {is_flipped.count_nonzero()} triangles.")
-    energy[is_flipped] = float("inf")
-    return energy
-
-
-def vertex_area_matrix(
-    n_vertices: int, faces: torch.Tensor, dtype: torch.dtype = torch.float32
-) -> torch.Tensor:
-    bdr_edges = boundary(faces)
-    bdr_edges_bwd = bdr_edges[:, (1, 0)]
-    n_bdr_edges = bdr_edges.shape[0]
-    idcs_i = torch.cat([bdr_edges, bdr_edges_bwd + n_vertices], -2).flatten(-2, -1)
-    idcs_j = torch.cat([bdr_edges_bwd + n_vertices, bdr_edges], -2).flatten(-2, -1)
-    values = torch.tensor([0.25, -0.25], device=faces.device, dtype=dtype)
-    values = values[None, :].expand(2 * n_bdr_edges, -1).flatten(-2, -1)
-    return sp.coo_tensor(
-        torch.stack([idcs_i, idcs_j], -2), values, size=[2 * n_vertices, 2 * n_vertices]
-    )
+from iskra.parameterization import (
+    boundary_matrix,
+    scp_solve_from_weights,
+    symmetric_dirichlet_energy,
+    triangle_to_local,
+    uv_local,
+    vertex_area_matrix,
+)
+from iskra.sparse_linalg import default_solver
+from iskra.topology import face_index, get_subfaces
 
 
 def write_obj_with_uv(
@@ -82,30 +42,6 @@ def write_obj_with_uv(
         f.write(obj_text)
 
 
-def compute_scp(
-    weights: torch.Tensor,
-    d_01: torch.Tensor,
-    va_mat: torch.Tensor,
-    boundary_mat: torch.Tensor,
-) -> torch.Tensor:
-    lap = sp.matmul(d_01.mT, sp.matmul(sp.diag(weights), d_01)).coalesce()
-    lhs = (sp.repdiag(lap, 2) - 2 * va_mat).coalesce()
-    # lhs = lhs + 1e-8 * sp.eye(lhs.shape[0], dtype=lap.dtype, device=lap.device)
-    # print(lhs.to_dense())
-    # print(torch.linalg.lu_factor(rhs.to_dense()))
-    evals, evecs = eigsh(
-        lhs,
-        M=boundary_mat,
-        k=3,
-        sigma=-1e-12,
-        bwd_method="individual",
-        bwd_max_iter=25,
-    )
-    # print(f"Difference between eigenvalues: {evals[1] - evals[2]}")
-    uv_opt = evecs[:, 0:1].reshape(2, -1).mT
-    return uv_opt
-
-
 def main(mesh_path: Path, ckpt_path: Path | None = None, ckpt_eval: bool = False):
     dtype = torch.double
     device = "cpu"
@@ -121,15 +57,8 @@ def main(mesh_path: Path, ckpt_path: Path | None = None, ckpt_eval: bool = False
     # lengths = edge_lengths(lines)
     # cot = cotan_weights_intrinsic(lengths, face_edges, clamp_min=1e-8)
     # lap = sp.matmul(d_01.mT, sp.matmul(sp.diag(cot), d_01)).coalesce()
-    bdr_idx = boundary(faces).flatten().unique()
-
-    vertex_area = vertex_area_matrix(mesh.n_vertices, mesh.faces, dtype=dtype)
-    bdr_ii = torch.stack([bdr_idx, bdr_idx], 0)
-    bdr_val = torch.ones(bdr_ii.shape[1], dtype=dtype, device=device)
-    boundary_mat_block = sp.coo_tensor(
-        bdr_ii, bdr_val, size=[mesh.n_vertices, mesh.n_vertices]
-    )
-    boundary_mat = sp.repdiag(boundary_mat_block, 2)
+    vertex_area = vertex_area_matrix(mesh.n_vertices, faces, dtype=dtype)
+    boundary_mat = boundary_matrix(mesh.n_vertices, faces, dtype=dtype)
 
     rest_local = triangle_to_local(verts, faces)
     rest_areas = triangle_areas(face_index(verts, faces))
@@ -180,7 +109,7 @@ def main(mesh_path: Path, ckpt_path: Path | None = None, ckpt_eval: bool = False
         mlp.load_state_dict(torch.load(ckpt_path, weights_only=True))
         if ckpt_eval:
             cot = forward(verts)
-            uv = compute_scp(cot, d_01, vertex_area, boundary_mat)
+            uv = scp_solve_from_weights(d_01, cot, vertex_area, boundary_mat)
 
             write_obj_with_uv(
                 ckpt_path.parent / f"{mesh_path.stem}_from_ckpt.obj",
@@ -197,7 +126,7 @@ def main(mesh_path: Path, ckpt_path: Path | None = None, ckpt_eval: bool = False
 
             lengths = edge_lengths(face_index(verts, edges))
             cot = cotan_weights_intrinsic(lengths, face_edges)
-            uv = compute_scp(cot, d_01, vertex_area, boundary_mat)
+            uv = scp_solve_from_weights(d_01, cot, vertex_area, boundary_mat)
             write_obj_with_uv(
                 ckpt_path.parent / f"{mesh_path.stem}_scp.obj", verts, faces, uv
             )
@@ -228,16 +157,16 @@ def main(mesh_path: Path, ckpt_path: Path | None = None, ckpt_eval: bool = False
     #     edge_lengths(face_index(verts_opt, edges)), face_edges, d_01, vertex_area, rhs
     # )
 
-    results_dir = Path.home() / "Dropbox" / "Results" / "iskra" / "scp" / mesh_path.stem
+    results_dir = Path.cwd() / "results" / "iskra" / "scp" / mesh_path.stem
     results_dir.mkdir(exist_ok=True, parents=True)
 
     lengths = edge_lengths(face_index(verts, edges))
     cot = cotan_weights_intrinsic(lengths, face_edges)
-    uv_opt = compute_scp(cot, d_01, vertex_area, boundary_mat)
+    uv_opt = scp_solve_from_weights(d_01, cot, vertex_area, boundary_mat)
     write_obj_with_uv(results_dir / "scp.obj", verts, faces, uv_opt)
 
     cot = forward(verts)
-    uv_opt = compute_scp(cot, d_01, vertex_area, boundary_mat)
+    uv_opt = scp_solve_from_weights(d_01, cot, vertex_area, boundary_mat)
     param_local = uv_local(uv_opt, faces)
     # generator = torch.Generator(device=device)
     # generator.manual_seed(620)
@@ -246,9 +175,9 @@ def main(mesh_path: Path, ckpt_path: Path | None = None, ckpt_eval: bool = False
         # lengths = edge_lengths(face_index(verts_opt, edges))
         # cot = cotan_weights_intrinsic(lengths, face_edges)
         cot = forward(verts)
-        uv_opt = compute_scp(cot, d_01, vertex_area, boundary_mat)
+        uv_opt = scp_solve_from_weights(d_01, cot, vertex_area, boundary_mat)
         param_local = uv_local(uv_opt, faces)
-        energy = symmetric_dirichlet(rest_local, param_local, rest_areas)
+        energy = symmetric_dirichlet_energy(rest_local, param_local, rest_areas)
         # energy.mean().backward()
         # if step % 10 == 0:
         # with torch.no_grad():
@@ -326,7 +255,9 @@ def main(mesh_path: Path, ckpt_path: Path | None = None, ckpt_eval: bool = False
         if step == 250:
             optimizer = torch.optim.Adam(mlp.parameters(), lr=5e-4)
         if step % 50 == 0 or step == max_steps - 1:
-            uv_opt = compute_scp(forward(verts), d_01, vertex_area, boundary_mat)
+            uv_opt = scp_solve_from_weights(
+                d_01, forward(verts), vertex_area, boundary_mat
+            )
             write_obj_with_uv(
                 results_dir / f"optimized_{step}.obj", verts, faces, uv_opt
             )

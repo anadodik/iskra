@@ -29,6 +29,7 @@ source_suffix = {
     ".rst": "restructuredtext",
 }
 root_doc = "index"
+exclude_patterns = ["api/iskra.*.rst"]
 templates_path = ["templates"]
 
 intersphinx_mapping = {
