@@ -19,29 +19,10 @@ symmetric_dirichlet_energy = torch.compile(
     torch.vmap(symmetric_dirichlet_energy, (0, 0, 0)), fullgraph=True, dynamic=True
 )
 
-
-# def symmetric_dirichlet_2(
-#     rest_local: torch.Tensor, param_triangles: torch.Tensor, rest_areas: torch.Tensor
-# ) -> torch.Tensor:
-#     edge_vecs = param_triangles[..., 1:, :] - param_triangles[..., 0:1, :]
-#     param_local = edge_vecs.mT
-#     jac = param_local @ torch.linalg.inv(rest_local)
-#     energy_fwd = (jac**2).sum((-2, -1))
-#     energy_bwd = (torch.linalg.inv(jac) ** 2).sum((-2, -1))
-#     energy = rest_areas * (energy_fwd + energy_bwd)
-#
-#     is_flipped = torch.linalg.det(param_local.mT) <= 0
-#     energy = torch.where(is_flipped, float("inf"), energy)
-#     return energy[..., None]
-#
-#
-# sd_jac = torch.func.vmap(
-#     torch.func.hessian(symmetric_dirichlet_2, 1), in_dims=(0, 0, 0)
-# )
-
 if __name__ == "__main__":
-    # TODO: Rename file to AQP.
-    parser = ArgumentParser(description="Demonstrates a SLIM parameterization.")
+    parser = ArgumentParser(
+        description="Demonstrates a symmetric dirichlet parameterization."
+    )
     parser.add_argument("mesh_path", type=str, help="The path of the mesh to load.")
     args = parser.parse_args()
 
@@ -66,17 +47,6 @@ if __name__ == "__main__":
     lap, mass = laplacian(verts, faces, clamp_min=0.0)
     rhs = torch.zeros([verts.shape[0], 2], dtype=dtype, device=device)
     uv_init = min_quadratic_energy(lap, rhs, bdr, bdr_uv)[1]
-    # # print(torch.sort(triangle_areas(face_index(uv_init, faces))))
-
-    # param_local = uv_local(uv_init, faces)
-    # jac = sd_jac(rest_local, face_index(uv_init, faces), rest_areas)
-    # idx_i = torch.cat([faces.flatten(), faces.flatten() + mesh.topo.n_faces])
-    # idx_j = torch.cat([faces.flatten(), faces.flatten() + mesh.topo.n_faces])
-    # print(jac.permute(0, 1, 2, 4, 3, 5).shape)
-    # print(idx_i.shape)
-    # # vjp_fn = torch.func.vjp(lambda x: uv_local(x, faces), uv_init)[1]
-    # # print(vjp_fn(jac)[0].shape)
-    # quit()
 
     uv_opt = torch.nn.Parameter(uv_init)
     lr = 100
@@ -85,7 +55,6 @@ if __name__ == "__main__":
 
     param_local = uv_local(uv_opt, faces)
     energy = symmetric_dirichlet_energy(rest_local, param_local, rest_areas)
-    quit()
 
     def step_fn():
         param_local = uv_local(uv_opt, faces)
