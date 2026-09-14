@@ -62,11 +62,11 @@ def test_tetrahedra_subfaces(tetrahedra: torch.Tensor) -> None:
 
     torch.testing.assert_close(tris, tris_expected, rtol=0, atol=0)
 
-    tets_to_tris_expected = torch.tensor([[0, 1, 2, 3], [5, 4, 6, 3]])
+    tets_to_tris_expected = torch.tensor([[3, 2, 1, 0], [3, 6, 4, 5]])
     torch.testing.assert_close(tets_to_tris, tets_to_tris_expected, rtol=0, atol=0)
 
     tets_to_tris_sign_expeceted = torch.tensor(
-        [[1.0, 1.0, 1.0, 1.0], [-1.0, -1.0, 1.0, -1.0]]
+        [[1.0, -1.0, 1.0, -1.0], [-1.0, 1.0, 1.0, -1.0]]
     )
     torch.testing.assert_close(
         tets_to_tris_sign, tets_to_tris_sign_expeceted, rtol=0, atol=0
@@ -101,9 +101,11 @@ def test_edges_subfaces(edges: torch.Tensor) -> None:
     edges_to_verts_expected = torch.tensor([[1, 0], [2, 1], [0, 2]])
 
     torch.testing.assert_close(edges_to_verts, edges_to_verts_expected, rtol=0, atol=0)
-    edges_to_verts_sign_expected = torch.ones_like(
+    edges_to_verts_sign_expected = torch.zeros_like(
         edges_to_verts_expected, dtype=torch.float32
     )
+    edges_to_verts_sign_expected[:, 0] = 1
+    edges_to_verts_sign_expected[:, 1] = -1
     torch.testing.assert_close(
         edges_to_verts_sign, edges_to_verts_sign_expected, rtol=0, atol=0
     )

@@ -93,6 +93,11 @@ def simplex_parity(faces: torch.Tensor) -> torch.Tensor:
     order and counting swaps modulo $2$. The number of transpositions is
     not unique, but its parity is.
 
+    Internally, we rely on the fact that the canonical order of vertices in
+    a face is the sorted order. Therefore, the funciton performs a selection
+    sort of the vertices within each face and counts how many swaps we have
+    to do to arrive at a sorted list.
+
     Tip:
         `get_subfaces()` maps this parity to the orientation signs
         $\\{+1, -1\\}$ used in the face-subface hierarchy.
@@ -113,7 +118,7 @@ def simplex_parity(faces: torch.Tensor) -> torch.Tensor:
         min_i = i + faces[..., i:].argmin(-1)
         # Swap smallest and current:
         smallest = torch.gather(faces, -1, min_i[..., None])
-        torch.scatter(faces, -1, min_i[..., None], faces[..., i : i + 1])
+        faces.scatter_(-1, min_i[..., None], faces[..., i : i + 1])
         faces[..., i] = smallest[..., 0]
 
         # If swapped, increment number of transpositions:
