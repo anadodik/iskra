@@ -1,10 +1,34 @@
 [project]
-name = "iskra"
+name = "iskra-graphics"
 version = "0.0.1"
 description = "iskra: Tensor Geometry Processing"
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Ana Dodik", email = "anadodik@mit.edu" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+  "geometry-processing",
+  "mesh",
+  "pytorch",
+  "differentiable",
+  "graphics",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: C++",
+  "Topic :: Multimedia :: Graphics :: 3D Modeling",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Typing :: Typed",
+]
 dependencies = [
   "numpy",
   "scipy",
@@ -34,22 +58,48 @@ requires = [
 ]
 build-backend = "scikit_build_core.build"
 
-[tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-namespaces = true
-where = ["iskra"]
-
 [tool.scikit-build]
 minimum-version = "0.4"
 wheel.py-api = "cp312"
+wheel.packages = ["iskra"]
 build-dir = "build/{wheel_tag}"
 cmake.verbose = true
 cmake.build-type = "Release"
 
 [tool.scikit-build.cmake.define]
 CMAKE_CUDA_ARCHITECTURES = "89"
+
+[tool.cibuildwheel]
+# The extension is built against the stable ABI (wheel.py-api = "cp312"), so a
+# single cp312 build covers every supported interpreter.
+build = "cp312-*"
+skip = "*-musllinux_*"
+build-frontend = "build"
+# Smoke test the compiled extension only. Importing iskra.io would pull in
+# torch, which is deliberately not a dependency of the package.
+test-command = "python {project}/scripts/smoke_test_wheel.py"
+# cholespy publishes no aarch64 wheel, so installing the wheel to test it would
+# try to compile cholespy against a BLAS/LAPACK the runner does not have. The
+# aarch64 wheel is still built and shipped; it just goes untested here.
+test-skip = "*_aarch64"
+
+[tool.cibuildwheel.linux]
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+
+[tool.cibuildwheel.windows]
+# 32-bit Windows is not a supported target: scipy, cholespy and libigl all
+# ship no win32 wheels, so such a wheel could never be installed.
+archs = ["AMD64"]
+
+[tool.cibuildwheel.macos]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }
+
+# rapidobj needs C++17 std::filesystem, which is 10.15+ on x86_64. arm64 keeps
+# 11.0 above, since anything lower is not a valid deployment target there.
+[[tool.cibuildwheel.overrides]]
+select = "*-macosx_x86_64"
+environment = { MACOSX_DEPLOYMENT_TARGET = "10.15" }
 
 [tool.black]
 line-length = 88

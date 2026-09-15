@@ -1,4 +1,4 @@
-![](docs/logo.svg)
+![](https://raw.githubusercontent.com/anadodik/iskra/main/docs/logo.svg)
 
 # `iskra` ✨ Modern Geometry Processing
 
