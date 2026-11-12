@@ -368,7 +368,7 @@ def face_connection_laplacian(
     edges, face_to_edge, _ = get_subfaces(faces)
     mass = face_connection_mass(verts, edges, face_to_edge, flaps)
     d_01 = face_connection_d_01(faces.shape[0], flaps, connection)
-    laplacian = d_01.mT @ mass @ d_01
+    laplacian = d_01.adjoint() @ mass @ d_01
     return laplacian, mass
 
 
@@ -457,6 +457,7 @@ def smooth_frame_field(
     partial_vals: complex | Iterable[complex] | torch.Tensor | None = None,
     soft_idcs: int | Iterable[int] | torch.Tensor | None = None,
     soft_vals: complex | Iterable[complex] | torch.Tensor | None = None,
+    soft_weights: torch.Tensor | None = None,
     ortho_reg_lambda: float = 0.0,
     soft_reg_lambda: float = 0.0,
 ) -> torch.Tensor:
@@ -487,6 +488,8 @@ def smooth_frame_field(
         soft_vals (tuple[complex, complex] | Tensor[Complex, [S, 2]]): Complex
             polyvector coefficients to use as soft constraints. Use
             `to_intrinsic_frame_field()` to project extrinsic vectors to intrinsic ones.
+        soft_weights (torch.Tensor | None): Controls the strength of the soft constraints
+            per face. If set to `None`, it is considered to be `1` everywhere.
         ortho_reg_lambda (float): Strength of the orthogonality regularizer.
             Regularization disabled when `ortho_reg_lambda=0.0`.
         soft_reg_lambda (float): Strength of the soft-alignment regularizer.
@@ -558,11 +561,20 @@ def smooth_frame_field(
         system = system + 1 / (3 * total_area) * ortho_reg_lambda * ortho_reg
     if soft_reg_lambda > 0 and soft_exist:
         soft_areas = areas[soft_idcs]
-        total_soft_area = soft_areas.sum()
         soft_mass_mat = sp.repdiag(
             sp.coo_tensor([soft_idcs, soft_idcs], soft_areas, size=[n_faces, n_faces]),
             2,
         )
+        if soft_weights is not None:
+            soft_weights_mat = sp.repdiag(
+                sp.coo_tensor(
+                    [soft_idcs, soft_idcs], soft_weights, size=[n_faces, n_faces]
+                ),
+                2,
+            )
+            soft_mass_mat = soft_mass_mat * soft_weights_mat
+        # TODO: fix sparse here, item() should not be necessary:
+        total_soft_area = soft_mass_mat.sum().to_dense().cpu().item()
         soft_targets = torch.zeros_like(rhs)
         soft_targets[soft_idcs] = soft_vals[:, 0]
         soft_targets[n_faces + soft_idcs] = soft_vals[:, 1]

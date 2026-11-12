@@ -1044,7 +1044,10 @@ def get_slice(x: SparseTensor, *indices: _INDEX_TYPE) -> SparseTensor:
     # * We can append missing indices as slice()
     # *
     # and computes the output shape from the input
-    assert x.layout == torch.sparse_coo
+    if x.layout != torch.sparse_coo:
+        raise ValueError(
+            f"Slicing only implemented for COO tensors. Got layout: {x.layout}"
+        )
     mask, new_shape = _build_index_selection_mask(x, *indices)
     # The following is faster than indices()[:, mask] and values()[mask] because
     # masking with a boolean tensor calls nonzero under the hood.
