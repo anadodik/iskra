@@ -29,6 +29,38 @@ def cotan_weights(
     return cotan_weights_intrinsic(lengths, face_to_edge, clamp_min)
 
 
+def face_cotan_intrinsic(
+    edge_lengths: torch.Tensor, face_to_edge: torch.Tensor
+) -> torch.Tensor:
+    """Computes cotangent of each angle in a triangle from edge lengths alone.
+
+    Because of how indexing works in `iskra`, the output of this function also
+    corresponds to the cotan of the angle of a vertex opposite an edge in a face-edge
+    connectivity matrix.
+
+    Args:
+        edge_lengths (Tensor[Float, [E, 1]]): Triangle edge lengths.
+        face_to_edge (Tensor[Int, [F, 3]]): Triangle to edge indices,
+            e.g., obtained via `iskra.topology.get_subfaces(faces)`.
+
+    Returns:
+        Tensor[Float, [F, 3]]: Triangle angle cotangents.
+    """
+    face_edge_lengths = face_index(edge_lengths, face_to_edge)
+    area = triangle_areas_intrinsic(edge_lengths, face_to_edge)
+    face_edge_lengths_sq = face_edge_lengths**2
+
+    # For each edge in a triangle, its value is the sum of the values
+    # on the other two edges, minus its own value.
+    cot_ij = (
+        -face_edge_lengths_sq
+        + face_edge_lengths_sq[:, (1, 0, 0)]
+        + face_edge_lengths_sq[:, (2, 2, 1)]
+    )
+    cot_ij = cot_ij / area[:, None] / 4
+    return cot_ij
+
+
 def cotan_weights_intrinsic(
     edge_lengths: torch.Tensor,
     face_to_edge: torch.Tensor,
