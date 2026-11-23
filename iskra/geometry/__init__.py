@@ -46,6 +46,7 @@ from iskra.geometry.normals import (
 from iskra.geometry.quaternions import Quaternion
 from iskra.geometry.volume import (
     edge_lengths,
+    signed_tetrahedron_volumes,
     tetrahedron_volumes,
     tetrahedron_volumes_intrinsic,
     triangle_areas,
@@ -71,6 +72,7 @@ __all__ = [
     "edge_lengths",
     "triangle_areas",
     "tetrahedron_volumes",
+    "signed_tetrahedron_volumes",
     "volume_form",
     "triangle_barycentric_coordinates",
     "tetrahedron_barycentric_coordinates",

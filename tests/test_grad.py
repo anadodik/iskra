@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from iskra.fem import grad
+from iskra.fem import grad, grad_edge, grad_tetrahedron, grad_triangle
 
 
 def test_grad_polyline() -> None:
@@ -21,7 +21,7 @@ def test_grad_polyline() -> None:
     fun_const_grad = 2 * vertices
     fun_other_grad = vertices**2
 
-    g = grad(vertices, edges)
+    g = grad_edge(vertices, edges)
 
     const_res = g @ fun_zero_grad
     torch.testing.assert_close(
@@ -44,32 +44,72 @@ def test_grad_polyline() -> None:
     torch.testing.assert_close(fun_grad_res, 2.0 * edge_centers, rtol=0, atol=1e-5)
 
 
-def test_grad_2d_triangle() -> None:
-    vertices = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
-    faces = torch.tensor([[0, 1, 2]], dtype=torch.long)
+def test_grad_triangle_2d() -> None:
+    verts = torch.tensor(
+        [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=torch.float32
+    )
+    faces = torch.tensor([[0, 1, 2], [1, 3, 2]], dtype=torch.long)
 
-    gx, gy = grad(vertices, faces)
-
-    g = torch.cat([gx.to_dense(), gy.to_dense()], dim=0)
-
-    gt = torch.tensor([[-1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]], dtype=vertices.dtype)
+    g = grad_triangle(verts, faces).to_dense()
+    gt = torch.tensor(
+        [
+            [-1.0, 1.0, 0.0, 0.0],
+            [-1.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, -1.0, 1.0],
+            [0.0, -1.0, 0.0, 1.0],
+        ],
+        dtype=verts.dtype,
+    )
 
     torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)
 
 
-def test_grad_3d_triangle() -> None:
-    vertices = torch.tensor(
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=torch.float32
+def test_grad_triangle_3d() -> None:
+    h = np.sqrt(3) / 2
+    verts = torch.tensor(
+        [[-h, 0.5, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.5, +h]],
+        dtype=torch.float32,
     )
+    faces = torch.tensor([[0, 1, 2], [1, 3, 2]], dtype=torch.long)
 
-    faces = torch.tensor([[0, 1, 2]], dtype=torch.long)
-
-    gx, gy, gz = grad(vertices, faces)
-
-    g = torch.cat([gx.to_dense(), gy.to_dense(), gz.to_dense()], dim=0)
-
+    g = grad_triangle(verts, faces).to_dense()
     gt = torch.tensor(
-        [[-1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [-1.0, 0.0, 1.0]], dtype=vertices.dtype
+        [
+            [-1.0 / h, 0.5 / h, 0.5 / h, 0.0],
+            [0.0, -1.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0],
+            [0.0, -1.0, 1.0, 0.0],
+            [0.0, -0.5 / h, -0.5 / h, 1.0 / h],
+        ],
+        dtype=verts.dtype,
     )
+    torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)
 
+
+def test_grad_tetrahedron() -> None:
+    verts = torch.tensor(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ],
+        dtype=torch.float32,
+    )
+    faces = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.long)
+
+    g = grad_tetrahedron(verts, faces).to_dense()
+    gt = torch.tensor(
+        [
+            [-1.0, 1.0, 0.0, 0.0, 0.0],
+            [-1.0, 0.0, 1.0, 0.0, 0.0],
+            [-1.0, 0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.5, -0.5, -0.5, 0.5],
+            [0.0, -0.5, 0.5, -0.5, 0.5],
+            [0.0, -0.5, -0.5, 0.5, 0.5],
+        ],
+        dtype=verts.dtype,
+    )
     torch.testing.assert_close(g, gt, rtol=0, atol=1e-6)

@@ -41,15 +41,15 @@ def _scalar_triple_product(
     return torch.sum(a * torch.linalg.cross(b, c), dim=-1, keepdim=True)
 
 
-def tetrahedron_volumes(tets: torch.Tensor) -> torch.Tensor:
-    """Computes the volumes of a list of tetrahedra in 3D.
+def signed_tetrahedron_volumes(tets: torch.Tensor) -> torch.Tensor:
+    """Computes the *signed* volumes of a list of tetrahedra in 3D.
 
     Args:
         tets (Tensor[Float, [Bs, 4, 3]]): Tetrahedra tensor s.t. second to
             last dimension represent corners, last represents coordinates.
 
     Returns:
-        Tensor[Float, [Bs]]: Tetrahedra volumes.
+        Tensor[Float, [Bs]]: Tetrahedra signed volumes.
     """
     batch_shape = tets.shape[:-2]
     assert tets.shape[-2] == 4
@@ -62,6 +62,19 @@ def tetrahedron_volumes(tets: torch.Tensor) -> torch.Tensor:
         edge_dirs[..., 2, :],
     )
     return 1 / 6 * volume.reshape(*batch_shape)
+
+
+def tetrahedron_volumes(tets: torch.Tensor) -> torch.Tensor:
+    """Computes the volumes of a list of tetrahedra in 3D.
+
+    Args:
+        tets (Tensor[Float, [Bs, 4, 3]]): Tetrahedra tensor s.t. second to
+            last dimension represent corners, last represents coordinates.
+
+    Returns:
+        Tensor[Float, [Bs]]: Tetrahedra volumes.
+    """
+    return signed_tetrahedron_volumes(tets).abs()
 
 
 def volume_form(simplices: torch.Tensor) -> torch.Tensor:

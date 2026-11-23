@@ -1142,7 +1142,7 @@ def zero_slice(x: SparseTensor, *indices: _INDEX_TYPE) -> SparseTensor:
 def reshape(x: SparseTensor, *shape: int) -> SparseTensor:
     """Returns a sparse COO tensor with the same data, but with the specified shape.
 
-    Warn:
+    Warning:
         Unlike PyTorch's default reshape, we do not support $-1$ as one of the
         dimensions.
 
@@ -1273,7 +1273,7 @@ def cat(xs: Sequence[SparseTensor], dim: int = 0) -> SparseTensor:
         idcs_step += indices.shape[1]
         shape_step += x.shape[dim]
 
-    return coo_tensor(new_indices, new_values, size=new_shape, is_coalesced=True)
+    return coo_tensor(new_indices, new_values, size=new_shape).coalesce()
 
 
 def append(
@@ -1429,7 +1429,7 @@ def matmul(
     gradients through the sparse inputs. `SparseTensor.__matmul__` wraps around this
     function, meaning that, unlike PyTorch, `a @ b` is not a foot-gun in `iskra`.
 
-    Warn:
+    Warning:
         In case of a sparse-dense product, the sparse matrix is internally
         converted to the CSR format. This limitation stems from PyTorch's implementation
         of sparse COO matrices, which would produce dense gradients by default.
