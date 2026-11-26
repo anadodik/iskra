@@ -104,7 +104,7 @@ def test_adjoint(
             evals = evals[sort_idx][:k]
             evecs = evecs[:, sort_idx][:, :k]
     else:
-        evals, evecs = eigsh(lap, M=mass, k=k, sigma=sigma, bwd_method=adjoint)
+        evals, evecs = eigsh(lap, m=mass, k=k, sigma=sigma, bwd_method=adjoint)
     forward_time = time.perf_counter() - start
 
     # print(evals.shape, evecs.shape)
@@ -164,7 +164,7 @@ def construct_graph_laplacian(dtype, device) -> tuple[torch.Tensor, torch.Tensor
     graph.add_nodes_from(range(n))
 
     lap = nx.laplacian_matrix(graph)
-    lap = sp.from_scipy(lap).to(dtype=dtype)
+    lap = sp.from_scipy(lap.tocoo()).to(dtype=dtype)
     lap = lap + 1e-2 * sp.eye(n)
 
     n = graph.number_of_nodes()
@@ -189,7 +189,7 @@ def main():
 
     methods = [
         "unroll",
-        # "dodik-fixedpoint",
+        # "fixed-point",
         # "truncate",
         # "individual",
     ]
@@ -302,7 +302,7 @@ def plot_df(df, n_verts_col, y, out_path):
     ax.set_xlabel(r"$$|\mathbb V|$$")
 
     method_map = {
-        "dodik-fixedpoint": "Fixed-point",
+        "fixed-point": "Fixed-point",
         "truncate": "Truncate",
         "unroll": "Unroll",
         "individual": "Individual",

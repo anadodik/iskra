@@ -65,7 +65,7 @@ def test_adjoint(
             evals = evals[sort_idx][:k]
             evecs = evecs[:, sort_idx][:, :k]
     else:
-        evals, evecs = eigsh(lap, M=mass, k=k, sigma=sigma, bwd_method=adjoint)
+        evals, evecs = eigsh(lap, m=mass, k=k, sigma=sigma, bwd_method=adjoint)
     forward_time = time.perf_counter() - start
 
     # loss = ((evecs.abs() - 0.5) ** 2).sum()
@@ -91,7 +91,7 @@ def construct_graph_laplacian() -> tuple[torch.Tensor, torch.Tensor]:
     graph.add_nodes_from(range(n))
 
     lap = nx.laplacian_matrix(graph)
-    lap = sp.from_scipy(lap).to(dtype=dtype)
+    lap = sp.from_scipy(lap.tocoo()).to(dtype=dtype)
     lap = lap + 1e-2 * sp.eye(n)
 
     n = graph.number_of_nodes()
@@ -123,8 +123,7 @@ if __name__ == "__main__":
     methods = [
         "unroll",
         "dense",
-        "dodik-fixedpoint",
-        # "dodik-invert",  # TODO: try with new PyTorch upstream
+        "fixed-point",
         "truncate",
         "individual",
     ]

@@ -294,18 +294,23 @@ def min_quadratic_energy(
 
 
 def power_iteration(
-    a: torch.Tensor,
+    a: sp.SparseTensor,
     x: torch.Tensor,
-    m: torch.Tensor,
+    m: sp.SparseTensor,
     sigma: float | None,
     solver: SolverT | None = None,
 ) -> torch.Tensor:
     if sigma is not None:
         evecs = linear_solve(a - sigma * m, sp.matmul(m, x), solver)[1]
     else:
-        evecs = sp.matmul(a, x)
-    evecs = torch.linalg.qr(evecs)[0]
-    m_evecs = sp.matmul(a, evecs)
+        # Assume M is not singular, because largest eigenvalue does not exist then:
+        evecs = sp.inv_diag(m) @ sp.matmul(a, x)
+    # Instead of taking M^{-1/2} Q(M^{1/2} U), we do the following to avoid inverting a
+    # singular M, if M is singular:
+    evecs = torch.linalg.solve_triangular(
+        torch.linalg.qr(m.sqrt() @ evecs).R, evecs, upper=True, left=False
+    )
+    m_evecs = sp.matmul(m, evecs)
     # evecs = evecs / torch.sqrt((evecs.conj() * m_evecs).sum(dim=0, keepdim=True).real)
     dot = (x.conj() * m_evecs).sum(dim=0, keepdim=True).real
     signs = 2 * (dot > 0).int() - 1
@@ -317,55 +322,48 @@ def power_iteration(
 
 
 def power_iterations(
-    A: torch.Tensor,  # noqa: N803
-    M: torch.Tensor | None = None,  # noqa: N803
+    a: sp.SparseTensor,
+    m: sp.SparseTensor | None = None,
     k: int = 1,
     sigma: float | None = None,
     maxiter: int = 10,
     tol: float = 1e-10,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    device = A.device
-    dtype = A.dtype
-    n = A.shape[0]
+    # TODO: cholesky on M for non-diagonal M
+    if m is not None and not sp.is_diag(m):
+        raise ValueError("power_iterations only works with diagonal m.")
+    device = a.device
+    dtype = a.dtype
+    n = a.shape[0]
 
     evals = torch.randn([k], device=device, dtype=dtype)
     evecs = torch.randn([n, k], device=device, dtype=dtype)
-    if M is None:
-        M = sp.eye(n, dtype=dtype, device=device)  # noqa: N806
+    if m is None:
+        m = sp.eye(n, dtype=dtype, device=device)
 
     # The following serves to make the gradients symmetric in the backward pass:
-    A = 0.5 * (A + A.mT).coalesce()  # noqa: N806
-
-    # TODO: cholesky on M for non-diagonal M
-    m_idcs = M.to_sparse_coo().indices()
-    if (m_idcs[0] != m_idcs[1]).any():
-        raise ValueError("M must be diagonal.")
-    M_sqrt_inv = M.clone()  # noqa: N806
-    M_sqrt_inv._values().copy_(1 / M._values().sqrt())
-    M_sqrt_inv = M_sqrt_inv.coalesce()  # noqa: N806
+    a = 0.5 * (a + a.mT).coalesce()
 
     if sigma is not None:
-        system = A - sigma * M
+        system = a - sigma * m
         solver = default_solver(system)
 
-    A = A.to_sparse_csr()
-    M = M.to_sparse_csr()
+    a = a.to_sparse_csr()
     for it in range(maxiter):
         if sigma is not None:
-            solver, z = linear_solve(system, sp.matmul(M, evecs), solver)
+            solver, z = linear_solve(system, sp.matmul(m, evecs), solver)
         else:
-            z = sp.matmul(A, evecs)
-        z, _ = torch.linalg.qr(z)
-        # z = M_sqrt_inv @ z
-        z = z / torch.sqrt((z.conj() * (sp.matmul(M, z))).sum(dim=0, keepdim=True).real)
-
+            z = sp.inv_diag(m) @ sp.matmul(a, evecs)
+        z = torch.linalg.solve_triangular(
+            torch.linalg.qr(m.sqrt() @ z).R, z, upper=True, left=False
+        )
         if torch.linalg.vector_norm(evecs - z).all() < tol:
             evecs = z
             print(f"Converged after {it} power iterations.")
             break
         evecs = z
     # Rayleigh quotient for generalized eigenvalue
-    evals = (evecs.conj() * sp.matmul(A, evecs)).sum(-2)
+    evals = (evecs.conj() * sp.matmul(a, evecs)).sum(-2)
 
     sort_idx = torch.argsort(-torch.abs(evals - (sigma if sigma is not None else 0)))
     evals = evals[sort_idx]
@@ -410,13 +408,6 @@ def make_power_iteration_vjp(
             )
 
     return vjp_evecs, vjp_a
-
-
-# start = time.perf_counter()
-# make_power_iteration_vjp = torch.compile(
-#     make_power_iteration_vjp, backend="inductor", dynamic=True
-# )
-# print("Compiling VJP took:", time.perf_counter() - start)
 
 
 def fixed_point_solver(
@@ -507,10 +498,9 @@ def gmres_solve(
         w = w - krylov_basis[:, : k + 1] @ hessenberg[: k + 1, k]
 
         hessenberg[k + 1, k] = torch.linalg.norm(w)
-        if hessenberg[k + 1, k] > 1e-12:
+        breakdown = bool(hessenberg[k + 1, k] <= 1e-12)
+        if not breakdown:
             krylov_basis[:, k + 1] = w / hessenberg[k + 1, k]
-        else:
-            break
 
         for i in range(k):
             temp = cos_vals[i] * hessenberg[i, k] + sin_vals[i] * hessenberg[i + 1, k]
@@ -545,7 +535,7 @@ def gmres_solve(
                 f"(tol={abs_tol + rel_tol * initial_res_norm:.3e}), "
                 f"res_rel={rel_val:.3e} (rel_tol={rel_tol:.3e})."
             )
-        if res <= abs_tol + rel_tol * initial_res_norm:
+        if breakdown or res <= abs_tol + rel_tol * initial_res_norm:
             break
     if verbose:
         LOGGER.info(f"GMRES exiting after {k + 1} iterations, residual: {res:.3e}")
@@ -609,75 +599,6 @@ def build_sampled_diagonal_preconditioner(f, shape, device, dtype, n_samples=500
         return v * scale
 
     return preconditioner
-
-
-# def gmres_solve(
-#     f: Callable[[torch.Tensor], torch.Tensor],
-#     b: torch.Tensor,
-#     init: torch.Tensor,
-#     maxiter: int,
-#     tol: float,
-# ) -> torch.Tensor:
-#     """Matrix-free GMRES solver for (I - J^T) u = b.
-
-#     Arguments:
-#         f (Callable[[torch.Tensor], torch.Tensor]): Computes J^T @ z  (vector-Jacobian product)
-#         b (torch.Tensor): Right-hand side of linear system, same shape as u.
-#         init (torch.Tensor): Initial guess for u.
-#         maxiter (int): Maximum number of iterations for the solver.
-#         tol (float): Minimum tolerance the solver needs to reach before exiting.
-
-#     Returns:
-#         (torch.Tensor): Solution to the linear system (I - J^T) u = b.
-#     """
-#     shape = b.shape
-#     device, dtype = b.device, b.dtype
-
-#     res = b.flatten() - f(init).flatten()
-#     res_norm = torch.norm(res)
-#     if res_norm < tol:
-#         return init
-
-#     # Krylov basis and Hessenberg matrix
-#     krylov_basis = [res / res_norm]
-#     hessenberg = torch.zeros((maxiter + 1, maxiter), dtype=dtype, device=device)
-#     g = torch.zeros((maxiter + 1,), dtype=dtype, device=device)
-#     g[0] = res_norm
-
-#     for k in range(maxiter):
-#         q_k = krylov_basis[k].reshape(shape)
-#         # Compute (I - J^T) z:
-#         w = f(q_k).flatten()
-
-#         # Modified Gram-Schmidt orthogonalization:
-#         for i in range(k + 1):
-#             hessenberg[i, k] = torch.dot(krylov_basis[i], w)
-#             w -= hessenberg[i, k] * krylov_basis[i]
-
-#         hessenberg[k + 1, k] = torch.norm(w)
-#         if hessenberg[k + 1, k] > 0:
-#             krylov_basis.append(w / hessenberg[k + 1, k])
-#         else:
-#             break
-
-#         # Least-squares solve min ||beta e1 - H y||
-#         hessenberg_k = hessenberg[: k + 2, : k + 1]
-#         g_k = g[: k + 2]
-#         with profile_block("lstsq"):
-#             y, *_ = torch.linalg.lstsq(hessenberg_k, g_k.unsqueeze(1))
-#         y = y.squeeze(1)
-
-#         res = torch.norm(g_k - hessenberg_k @ y)
-#         if res < tol:
-#             break
-#     print(f"GMRES exiting after {k} iterations, residual: {res}.")
-
-
-#     basis_mat = torch.stack(krylov_basis[: k + 1], dim=1)  # [dim, k + 1]
-#     y, *_ = torch.linalg.lstsq(hessenberg[: k + 2, : k + 1], g[: k + 2].unsqueeze(1))
-#     x_flat = init.flatten() + basis_mat @ y.squeeze(1)
-#     # res = torch.norm(b.flatten() - f(x_flat.reshape(shape)).flatten())
-#     return x_flat.reshape(shape)
 
 
 def cg_solve(
@@ -770,7 +691,7 @@ class Eigsh(torch.autograd.Function):
         (a, m, _, sigma, maxiter, tol, bwd_method, bwd_max_iter, bwd_eps) = inputs
         evals, evecs = output
         ctx.save_for_backward(a, m, evals, evecs)
-        ctx.adjoint = bwd_method
+        ctx.bwd_method = bwd_method
         ctx.sigma = sigma
         ctx.maxiter = maxiter
         ctx.tol = tol
@@ -785,7 +706,9 @@ class Eigsh(torch.autograd.Function):
         sigma: float = 0.0,
         maxiter: int = 10,
         tol: float = 1e-10,
-        bwd_method: Literal["unroll"] = "unroll",
+        bwd_method: Literal[
+            "individual", "truncate", "fixed-point", "step-backward"
+        ] = "individual",
         bwd_max_iter: int = 200,
         bwd_eps: float = 1e-12,
     ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -836,7 +759,7 @@ class Eigsh(torch.autograd.Function):
             if grad_evecs is None:
                 grad_evecs: torch.Tensor = torch.zeros(n, k, dtype=dtype, device=device)
 
-            if ctx.adjoint == "truncate":
+            if ctx.bwd_method == "truncate":
                 diff = evals[None, :] - evals[:, None]  # [k, k]
                 one_over_diff = torch.zeros_like(diff)
                 eps = torch.finfo(diff.dtype).eps
@@ -851,11 +774,11 @@ class Eigsh(torch.autograd.Function):
 
                 # Sparse outer product evecs @ h @ evecs.mT
                 rows, cols = a.indices()
-                grad_vals = -(evecs @ h)[rows, ...] * evecs[cols, ...]
+                grad_vals = (evecs @ h)[rows, ...] * evecs[cols, ...]
                 if grad_vals.ndim == 2:
                     grad_vals = grad_vals.sum(-1)
                 grad_a = sp.coo_tensor(a.indices(), grad_vals, [n, n])
-            elif ctx.adjoint == "individual":
+            elif ctx.bwd_method == "individual":
                 dg_dx = torch.zeros_like(evecs)
                 lhs_i = torch.arange(n, device=device, dtype=torch.int64)
                 lhs_j = torch.full([n], n, device=device, dtype=torch.int64)
@@ -865,8 +788,8 @@ class Eigsh(torch.autograd.Function):
                         lhs_aa.indices(), lhs_aa.values(), size=[n + 1, n + 1]
                     ).coalesce()
                     lhs_ba = -sp.matmul(m, evecs[:, i])
-                    lhs = sp.append(lhs, torch.stack([lhs_i, lhs_j]), -lhs_ba)
-                    lhs = sp.append(lhs, torch.stack([lhs_j, lhs_i]), -lhs_ba)
+                    lhs = sp.append(lhs, torch.stack([lhs_i, lhs_j]), lhs_ba)
+                    lhs = sp.append(lhs, torch.stack([lhs_j, lhs_i]), lhs_ba)
                     if grad_evals is None:
                         rhs = torch.nn.functional.pad(grad_evecs[:, i], (0, 1))
                     else:
@@ -883,7 +806,7 @@ class Eigsh(torch.autograd.Function):
                 if grad_vals.ndim == 2:
                     grad_vals = grad_vals.sum(-1)
                 grad_a = sp.coo_tensor(a.indices(), grad_vals, [n, n])
-            elif ctx.adjoint == "dodik-invert":
+            elif ctx.bwd_method == "step-backward":
 
                 def implicit_func(a, x):
                     return power_iteration(a, x, m, ctx.sigma) - x
@@ -897,7 +820,7 @@ class Eigsh(torch.autograd.Function):
                 dx_da_mat = -torch.linalg.solve(df_dx_mat, df_da_mat)
                 grad_a = (grad_evecs.flatten() @ dx_da_mat).reshape(n, n)
 
-            elif ctx.adjoint == "dodik-fixedpoint":
+            elif ctx.bwd_method == "fixed-point":
                 # TODO: eigenvalue loss
 
                 init = torch.zeros_like(evecs)
@@ -924,29 +847,34 @@ class Eigsh(torch.autograd.Function):
                 )
 
                 grad_a = vjp_a(u)[0]
+            else:
+                raise ValueError(f"Unrecognized eigsh bwd_method={ctx.bwd_method}.")
 
         if grad_a is not None:
             # Ensure symmetry of gradients:
             grad_a = 0.5 * (grad_a + grad_a.mT)
+        # TODO: differentiate w.r.t. M (fine to assume diagonal M for now)
         return grad_a, None, None, None, None, None, None, None, None
 
 
 def eigsh(
-    A: torch.Tensor,  # noqa: N803
-    M: torch.Tensor | None = None,  # noqa: N803
+    a: sp.SparseTensor,
+    m: sp.SparseTensor | None = None,
     k: int = 1,
     sigma: float | None = None,
     maxiter: int = 200,
     tol: float = 1e-8,
     bwd_method: Literal[
-        "unroll", "individual", "truncate", "dodik-fixedpoint", "dodik-invert"
+        "unroll", "individual", "truncate", "fixed-point"
     ] = "individual",
     bwd_max_iter: int = 100,
     bwd_eps: float = 1e-12,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     if bwd_method == "unroll":
-        return power_iterations(A, M, k=k, sigma=sigma, maxiter=maxiter, tol=tol)
+        return power_iterations(a, m, k=k, sigma=sigma, maxiter=maxiter, tol=tol)
     else:
+        if bwd_method == "fixed-point" and m is not None and not sp.is_diag(m):
+            raise ValueError("bwd_method=fixed-point only works with diagonal m.")
         return Eigsh.apply(
-            A, M, k, sigma, maxiter, tol, bwd_method, bwd_max_iter, bwd_eps
+            a, m, k, sigma, maxiter, tol, bwd_method, bwd_max_iter, bwd_eps
         )

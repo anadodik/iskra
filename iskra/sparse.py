@@ -774,6 +774,25 @@ def diag(values: torch.Tensor | SparseTensor) -> SparseTensor:
         return coo_tensor(ii, vals, size=shape).coalesce()
 
 
+def is_diag(mat: SparseTensor) -> bool:
+    """Checks whether a COO sparse tensor contains only diagonal elements.
+
+    Args:
+        mat (SparseTensor): Tensor to check.
+
+    Returns:
+        bool: True if all of the indices for each dimension are equal.
+    """
+    assert mat.is_sparse
+
+    idcs = mat.indices()
+    return (
+        mat.ndim >= 2
+        and all(s == mat.shape[0] for s in mat.shape)
+        and all(((idcs[i] == idcs[0]).all() for i in range(mat.ndim)))
+    )
+
+
 def get_diag(mat: SparseTensor) -> SparseTensor:
     """Extracts diagonal from sparse COO matrix.
 

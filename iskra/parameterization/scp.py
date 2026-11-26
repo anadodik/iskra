@@ -86,9 +86,9 @@ def scp_solve(
     boundary_mat: sp.SparseTensor,
     *,
     eps: float = 0.0,
-    sigma: float = -1e-12,
+    sigma: float = -1e-5,
     bwd_method: Literal[
-        "unroll", "individual", "truncate", "dodik-fixedpoint", "dodik-invert"
+        "unroll", "individual", "truncate", "fixed-point"
     ] = "individual",
     bwd_max_iter: int = 25,
 ) -> torch.Tensor:
@@ -104,7 +104,7 @@ def scp_solve(
         )
     _, evecs = eigsh(
         conformal_lap,
-        M=boundary_mat,
+        m=boundary_mat,
         k=3,
         sigma=sigma,
         bwd_method=bwd_method,
@@ -124,7 +124,7 @@ def scp_solve_from_weights(
     eps: float = 0.0,
     sigma: float = -1e-12,
     bwd_method: Literal[
-        "unroll", "individual", "truncate", "dodik-fixedpoint", "dodik-invert"
+        "unroll", "individual", "truncate", "fixed-point"
     ] = "individual",
     bwd_max_iter: int = 25,
 ) -> torch.Tensor:
