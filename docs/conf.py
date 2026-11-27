@@ -37,6 +37,7 @@ intersphinx_mapping = {
     "torch": ("https://pytorch.org/docs/stable/", None),
 }
 default_role = "any"
+autoclass_content = "both"
 
 myst_enable_extensions = [
     "alert",

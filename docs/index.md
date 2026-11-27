@@ -70,8 +70,16 @@ vert_normals = torch.nn.functional.normalize(vert_normals, dim=-1)  # [V, 3]
 ## Obtaining `iskra` ✨
 
 You will need PyTorch installed for `iskra` ✨ to work: [see PyTorch installation instructions here](https://pytorch.org/get-started/locally/).
+In addition, if you intend on using sparse linear solvers on the GPU, you should install cuDSS via [nvmath](https://docs.nvidia.com/cuda/nvmath-python/latest/installation.html).
+If you intend on using them on the CPU, you might wish to install suitesparse and [scikit-sparse](https://scikit-sparse.readthedocs.io/en/latest/overview.html) (currently only v0.4 of scikit-sparse is installed).
 ```bash
 pip install torch --index-url ... # your preferred PyTorch distribution
+
+# For cudss, for cuda version XX, do:
+pip install nvmath[cuXX-dx]
+
+# For cholmod, first install suitesparse using Conda or your OS distribution manager, then do:
+pip install scikit-sparse
 ```
 The code has been tested with `torch==2.12`, but will likely work with other versions too.
 

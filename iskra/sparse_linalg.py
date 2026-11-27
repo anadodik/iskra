@@ -1,6 +1,5 @@
 # Copyright (c) 2025 - present, Ana Dodik. All rights reserved.
 
-import time
 from typing import Callable, Literal, TypeAlias
 
 import numpy as np
@@ -8,8 +7,22 @@ import scipy.sparse
 import torch
 from cholespy import CholeskySolverD, CholeskySolverF, MatrixType
 
+import iskra.sparse as sp
+from iskra.logging.logging import getLogger
+from iskra.profiling import profile_block, profile_fn
+
+LOGGER = getLogger(__name__)
+
 try:
+    import sksparse
     from sksparse import cholmod
+
+    if int(sksparse.__version__.split(".")[1]) > 4:
+        LOGGER.warning(
+            "Wrong scikit-sparse version installed. "
+            f"Got {sksparse.__version__}, but need 0.4."
+        )
+        raise ImportError
 
     _cholmod_available = True
 except ImportError:
@@ -23,23 +36,49 @@ try:
 except ImportError:
     _nvmath_available = False
 
-import iskra.sparse as sp
-from iskra.logging.logging import getLogger
-from iskra.profiling import profile_block, profile_fn
-
 SolverT: TypeAlias = Callable[[torch.Tensor], torch.Tensor]
-
-LOGGER = getLogger(__name__)
 
 
 class CholmodSolver:
     def __init__(
         self,
-        mat: torch.Tensor,
+        mat: sp.SparseTensor,
         analyze_only: bool = False,
-        mode="supernodal",
-        ordering_method="amd",
+        mode: Literal["auto", "simplicial", "supernodal"] = "supernodal",
+        ordering_method: Literal[
+            "default",
+            "best",
+            "natural",
+            "metis",
+            "nesdis",
+            "amd",
+            "colamd",
+            "postordered",
+        ] = "amd",
     ):
+        """A wrapper around scikit-sparse's Cholmod sparse linear system solver.
+
+        The library is not installed by default and Cholmod's licencing requires you to
+        install version 0.4.6 separately on your machine.
+
+        See the `scikit-sparse docs <https://scikit-sparse.readthedocs.io/en/latest/index.html>`_
+        for more information on how to install the solvers and what the different solver
+        options mean.
+
+        Args:
+            mat (SparseTensor[Float, [N, N]]): Matrix to invert.
+            analyze_only (bool, optional): Only analyze the system or also factorize it.
+                Defaults to False.
+            mode (Literal["auto", "simplicial", "supernodal"]): Type of factorization
+                to use.
+            ordering_method (Literal["default", "best", "natural", "metis", "nesdis", "amd", "colamd", "postordered"]):
+                Matrix permutation for Cholesky.
+        """  # noqa: E501
+        if not _cholmod_available:
+            raise ValueError(
+                "scikit-sparse and Cholmod need to be installed "
+                "and available to use CholmodSolver."
+            )
         with profile_block("solver_init"):
             if analyze_only:
                 self.solver = cholmod.analyze(
@@ -51,18 +90,43 @@ class CholmodSolver:
                 )
 
     @profile_fn(name="refactor_numeric")
-    def refactor_numeric(self, mat: torch.Tensor):
+    def refactor_numeric(self, mat: sp.SparseTensor):
+        """Refactor the matrix numerically, reusing the existing symbolic factorization.
+
+        Args:
+            mat (sp.SparseTensor): Matrix to factor. Must have the same nonzero indices
+                as the one used for the symbolic factorization.
+        """
         mat_sp = sp.to_scipy(mat).tocsc()
         self.solver.cholesky_inplace(mat_sp)
 
-    def __call__(self, b: torch.Tensor):
+    def __call__(self, b: torch.Tensor) -> torch.Tensor:
+        """Solve the linear system using the prefactored matrix.
+
+        Args:
+            b (Tensor[Float, [N]]): Right-hand side.
+
+        Returns:
+            Tensor[Float, [N]]: Linear system solution.
+        """
         b_np = b.detach().cpu().numpy()
         x_np = np.ascontiguousarray(self.solver(b_np))
         return torch.tensor(x_np, dtype=b.dtype, device=b.device)
 
 
 class CUDSSSolver:
-    def __init__(self, mat: torch.Tensor, analyze_only: bool = False):
+    def __init__(self, mat: sp.SparseTensor, analyze_only: bool = False):
+        """A wrapper around nvmath's CUDSS sparse linear system solver.
+
+        Args:
+            mat (SparseTensor[Float, [N, N]]): Matrix to invert.
+            analyze_only (bool, optional): Only analyze the system or also factorize it.
+                Defaults to False.
+        """
+        if not _nvmath_available:
+            raise ValueError(
+                "nvmath needs to be installed and available to use CUDSSSolver."
+            )
         with profile_block("solver_init"):
             device = mat.device
             dtype = mat.dtype
@@ -87,12 +151,26 @@ class CUDSSSolver:
         self.options.blocking = True
 
     @profile_fn(name="refactor_numeric")
-    def refactor_numeric(self, mat: torch.Tensor):
+    def refactor_numeric(self, mat: sp.SparseTensor):
+        """Refactor the matrix numerically, reusing the existing symbolic factorization.
+
+        Args:
+            mat (sp.SparseTensor): Matrix to factor. Must have the same nonzero indices
+                as the one used for the symbolic factorization.
+        """
         new_values = mat.to_sparse_csr().values()
         self.mat_csr.values().data.copy_(new_values)
         self.solver.factorize()
 
     def __call__(self, b: torch.Tensor):
+        """Solve the linear system using the prefactored matrix.
+
+        Args:
+            b (Tensor[Float, [Bs, N]]): Right-hand side.
+
+        Returns:
+            Tensor[Float, [Bs, N]]: Linear system solution.
+        """
         device = b.device
         device_id = device.index if device.type == "cuda" else 0
         cudax.Device(device_id).set_current()
@@ -134,12 +212,43 @@ class CUDSSSolver:
 
 
 def default_solver(
-    mat: torch.Tensor, analyze_only: bool = False, is_psd: bool = True
+    mat: sp.SparseTensor, analyze_only: bool = False, is_psd: bool = True
 ) -> SolverT:
+    """Reasonably guesses a good solver based on your matrix and local environment.
+
+    For PSD matrices, it defaults to Cholmod on the CPU and CUDSS on the GPU,
+    *provided these are installed and available in your environment*. See
+    `CholmodSolver` and `CUDSSSolver` for more information. If these are not available,
+    it falls back to cholespy's solver.
+
+    For non-psd matrices, it defaults to scipy's `scipy.sparse.linalg.splu`, regardless
+    of whether we are on the CPU or GPU. GPU tensors will incur a roundtrip performance
+    penalty.
+
+    Args:
+        mat (SparseTensor[Float, [N, N]]): Matrix representing the linear system.
+        analyze_only (bool, optional): Whether to perform symbolic factorization only,
+            for solvers which support manualy separating stages. Defaults to False.
+        is_psd (bool, optional): Whether the matrix is symmetric positive semidefinite.
+            Defaults to True.
+
+    Raises:
+        TypeError: Raises if a PSD matrix with is passed but its datatype is
+            not floating point.
+
+    Returns:
+        SolverT: Solver with prefactored system.
+    """
     # TODO: better support for LU
     mat = mat.coalesce()
     is_float = mat.dtype == torch.float32 or mat.dtype == torch.float64
     if is_psd and is_float:
+        if mat.is_cuda and not _nvmath_available:
+            LOGGER.warning(
+                "Requesting a CUDA sparse linear solver but nvmath is not installed. "
+                "Performance will be degraded. "
+                "Install it via `pip install nvmath-python[cuXX-dx]`."
+            )
         if mat.is_cpu and _cholmod_available:
             _solve_fn = CholmodSolver(mat, analyze_only=analyze_only)
         elif mat.is_cuda and _nvmath_available:
@@ -183,7 +292,7 @@ def _call_solver(solver: SolverT, b: torch.Tensor) -> torch.Tensor:
     return solver(b)
 
 
-class LinearFactorAndSolve(torch.autograd.Function):
+class _LinearFactorAndSolve(torch.autograd.Function):
     """Differentiable linear system."""
 
     @staticmethod
@@ -240,7 +349,33 @@ def linear_solve(
     b: torch.Tensor,
     solver_fn: SolverT | None = None,
 ) -> tuple[SolverT, torch.Tensor]:
-    result: tuple[SolverT, torch.Tensor] = LinearFactorAndSolve.apply(mat, b, solver_fn)  # pyright: ignore[reportAssignmentType, reportReturnType]
+    """Perform a sparse linear solve for Ax = b.
+
+    Example:
+        For example, you can solve a linear system repeatedly in a loop as follows:
+        ```
+        x = x_init
+        solver = None
+        for step in range(n_steps):
+            solver, x = linear_solve(mat, x, solver)
+        ```
+
+
+    Args:
+        mat (Tensor[Float, [N, N]]): Matrix $A$ to invert.
+        b (Tensor[Float, [N]]): Right-hand side $b$.
+        solver_fn (SolverT | None, optional): Solver to use for the forward and
+            backward pass. If None, one will be constructed via `default_solver()`.
+
+    Returns:
+        SolverT: The solver that was used to solve the system. If `solver_fn` was None,
+            the function constructs it via `default_solver()`. Otherwise, it passes
+            `solver_fn` back to the user.
+        Tensor[Float, [N]]: Result of the solve $x$.
+    """
+    result: tuple[SolverT, torch.Tensor] = _LinearFactorAndSolve.apply(
+        mat, b, solver_fn
+    )  # pyright: ignore[reportAssignmentType, reportReturnType]
     return result
 
 
@@ -299,11 +434,33 @@ def power_iteration(
     m: sp.SparseTensor,
     sigma: float | None,
     solver: SolverT | None = None,
+    shrink_factor: float = 0.0,
 ) -> torch.Tensor:
+    """Single power iteration, intended for fixed-point backward pass.
+
+    This function is primarily intended as the fixed-point relation to be used when
+    differentiating the eigensolver. It does a couple of things differently from
+    standard power iteration---users should almost always reach for `power_iterations()`
+    instead.
+
+    Args:
+        a (SparseTensor[Float, [N, N]]): Matrix to eigendecompose.
+        x (Tensor[Float, [k, N]]): Current iterate.
+        m (SparseTensor[Float, [N, N]]): Diagonal "mass" matrix.
+        sigma (float | None): Sigma used in the shift-invert mode.
+        solver (SolverT | None, optional): Solver for (a - sigma * m) to be used
+            in shift-invert mode. Defaults to None.
+        shrink_factor (float): How much to shrink the outputs to reduce the
+            spectral radius.
+
+    Returns:
+        Tensor[Float, [k, N]]: Iteration output.
+    """
     if sigma is not None:
         evecs = linear_solve(a - sigma * m, sp.matmul(m, x), solver)[1]
     else:
-        # Assume M is not singular, because largest eigenvalue does not exist then:
+        # Assume M is not singular, because largest eigenvalue of
+        # m^{-1} a is infinite anyway:
         evecs = sp.inv_diag(m) @ sp.matmul(a, x)
     # Instead of taking M^{-1/2} Q(M^{1/2} U), we do the following to avoid inverting a
     # singular M, if M is singular:
@@ -311,14 +468,13 @@ def power_iteration(
         torch.linalg.qr(m.sqrt() @ evecs).R, evecs, upper=True, left=False
     )
     m_evecs = sp.matmul(m, evecs)
-    # evecs = evecs / torch.sqrt((evecs.conj() * m_evecs).sum(dim=0, keepdim=True).real)
+
     dot = (x.conj() * m_evecs).sum(dim=0, keepdim=True).real
     signs = 2 * (dot > 0).int() - 1
     evecs = signs * evecs
 
     # Shrink spectral radius:
-    lr = 0.1
-    return (1 - lr) * x + lr * evecs
+    return shrink_factor * x + (1 - shrink_factor) * evecs
 
 
 def power_iterations(
@@ -326,9 +482,29 @@ def power_iterations(
     m: sp.SparseTensor | None = None,
     k: int = 1,
     sigma: float | None = None,
-    maxiter: int = 10,
+    max_iter: int = 10,
     tol: float = 1e-10,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Low-level power iterations eigensolver; users should prefer eigsh in most cases.
+
+    This function is called from eigsh in the ``unroll'' mode. It offers no other ways
+    of differentiating through the eigensolver, unlike eigsh.
+
+    Args:
+        a (SparseTensor[Float, [N, N]]): Matrix to eigendecompose.
+        m (SparseTensor[Float, [N, N]]): Diagonal "mass" matrix.
+        k: int: How many eigenvalue-eigenvector pairs to compute.
+        sigma (float | None): Sigma used in the shift-invert mode.
+        max_iter (int): Maximum number of iterations.
+        tol (float): Absolute convergence tolerance.
+
+    Returns:
+        Tensor[Float, [k]]: Eigenvalues.
+        Tensor[Float, [k, N]]: Eigenvectors..
+
+    Raises:
+        ValueError: if a non-diagonal m is passed.
+    """
     # TODO: cholesky on M for non-diagonal M
     if m is not None and not sp.is_diag(m):
         raise ValueError("power_iterations only works with diagonal m.")
@@ -349,7 +525,7 @@ def power_iterations(
         solver = default_solver(system)
 
     a = a.to_sparse_csr()
-    for it in range(maxiter):
+    for it in range(max_iter):
         if sigma is not None:
             solver, z = linear_solve(system, sp.matmul(m, evecs), solver)
         else:
@@ -359,7 +535,7 @@ def power_iterations(
         )
         if torch.linalg.vector_norm(evecs - z).all() < tol:
             evecs = z
-            print(f"Converged after {it} power iterations.")
+            LOGGER.info(f"Power iterations converged after {it} power iterations.")
             break
         evecs = z
     # Rayleigh quotient for generalized eigenvalue
@@ -372,19 +548,22 @@ def power_iterations(
     return evals, evecs
 
 
-def make_power_iteration_vjp(
+def _make_power_iteration_vjp(
     a: torch.Tensor,
     evecs: torch.Tensor,
     m: torch.Tensor,
     sigma: float | None,
     solver: SolverT | None = None,
+    shrink_factor: float = 0.9,
 ) -> tuple[Callable[[torch.Tensor], tuple[torch.Tensor, ...]], ...]:
     with torch.enable_grad():
         a_g = a.clone().requires_grad_(True)
         evecs_g = evecs.clone().requires_grad_(True)
         if sigma is not None and solver is None:
             solver = default_solver(a - sigma * m)
-        evecs_out = power_iteration(a_g, evecs_g, m, sigma, solver=solver)
+        evecs_out = power_iteration(
+            a_g, evecs_g, m, sigma, solver=solver, shrink_factor=shrink_factor
+        )
         evecs_out = evecs_out - evecs_g
 
         def vjp_evecs(z_grad: torch.Tensor) -> tuple[torch.Tensor, ...]:
@@ -410,22 +589,22 @@ def make_power_iteration_vjp(
     return vjp_evecs, vjp_a
 
 
-def fixed_point_solver(
+def _fixed_point_solver(
     f: Callable[[torch.Tensor], torch.Tensor],
     z_init: torch.Tensor,
-    maxiter: int,
+    max_iter: int,
     tol: float | None = None,
 ) -> torch.Tensor:
     if tol is None:
         tol = 2 * torch.finfo(z_init.dtype).eps
     z_prev, z = z_init, f(z_init)
     i = 0
-    while torch.linalg.norm(z_prev - z) > tol and i < maxiter:
+    while torch.linalg.norm(z_prev - z) > tol and i < max_iter:
         z_prev, z = z, f(z)
         i += 1
         # if i % 10 == 0:
         #     print(torch.linalg.norm(z_prev - z))
-    print(f"Converged after {i} iterations.")
+    LOGGER.info(f"Fixed point solver converged after {i} iterations.")
     return z
 
 
@@ -439,23 +618,33 @@ def gmres_solve(
     preconditioner: Callable[[torch.Tensor], torch.Tensor] | None = None,
     verbose: bool = False,
 ) -> torch.Tensor:
-    """Matrix-free GMRES solver for J^T u = b.
+    """Matrix-free GMRES solver for J^T x = b.
 
-    Arguments:
-        f (Callable[[Tensor], Tensor]): Function which computes
-            J^T @ z (e.g., a vector-Jacobian product).
-        b (Tensor): Right-hand side of linear system, same shape as u.
-        init (Tensor): Initial guess for u.
+    Note that the function computes a right-hand side product as its primary use case is
+    in the adjoint method.
+
+    Warning:
+        This function is largely LLM generated and needs to be verified by a human.
+
+    Args:
+        f (Callable[[Tensor[Float, [N]]], Tensor[Float, [N]]]): Function which
+            computes $J^T x$ (e.g., a vector-Jacobian product), i.e., matrix-free
+            application of an `N`-by-`N` matrix.
+        b (Tensor[Float, [N]]): Right-hand side of linear system, same shape as $x$.
+        init (Tensor[Float, [N]]): Initial guess for $x$.
         max_iter (int): Maximum number of iterations for the solver.
-        abs_tol (float): Absolute tolerance the solver needs to reach before exiting.
-        rel_tol (float): Relative tolerance the solver needs to reach before exiting.
-        preconditioner (Optional[Callable]): Function representing M^-1.
-            If provided, the solver solves the left-preconditioned system
-            M^-1 A u = M^-1 b.
+        abs_tol (float): Absolute tolerance on the residual norm.
+        rel_tol (float): Tolerance on the residual norm relative to the initial
+            residual norm. The solver exits once the residual norm drops below
+            `abs_tol + rel_tol * initial_res_norm`, or after `max_iter` iterations.
+        preconditioner (Callable[[Tensor[Float, [Ds]]], Tensor[Float, [Ds]]] | None):
+            Function representing $M^{-1}$. If provided, the solver solves the
+            left-preconditioned system $M^{-1} J^T x = M^{-1} b$.
         verbose (bool): Whether to print logging information.
 
     Returns:
-        (torch.Tensor): Solution to the linear system, u.
+        Tensor[Float, [N]]: Solution to the linear system, $x$. If the system failed
+            to converge, returns the last iterate.
     """
     if verbose:
         LOGGER.setLevel("INFO")
@@ -565,7 +754,7 @@ def gmres_solve(
     return x_flat.reshape(shape)
 
 
-def build_diagonal_preconditioner(f, shape, device, dtype):
+def _build_diagonal_preconditioner(f, shape, device, dtype):
     diag = torch.zeros(shape.numel(), device=device, dtype=dtype)
     e_i = torch.zeros(shape.numel(), device=device, dtype=dtype)
     for i in range(shape.numel()):
@@ -582,7 +771,7 @@ def build_diagonal_preconditioner(f, shape, device, dtype):
     return preconditioner
 
 
-def build_sampled_diagonal_preconditioner(f, shape, device, dtype, n_samples=500):
+def _build_sampled_diagonal_preconditioner(f, shape, device, dtype, n_samples=500):
     dim = shape.numel()
     indices = torch.randperm(dim, device=device)[:n_samples]
 
@@ -605,23 +794,27 @@ def cg_solve(
     f: Callable[[torch.Tensor], torch.Tensor],
     b: torch.Tensor,
     init: torch.Tensor,
-    maxiter: int,
+    max_iter: int,
     tol: float,
 ) -> torch.Tensor:
-    """Matrix-free Conjugate Gradient solver for (I - J^T) u = b.
+    """Matrix-free conjugate gradient solver for Jx = b, for a PSD J.
 
-    Arguments:
-        f (Callable[[torch.Tensor], torch.Tensor]): Computes J^T @ z  (vector-Jacobian product)
-        b (torch.Tensor): Right-hand side of linear system, same shape as u.
-        init (torch.Tensor): Initial guess for u.
-        maxiter (int): Maximum number of iterations for the solver.
-        tol (float): Minimum tolerance the solver needs to reach before exiting.
+    Warning:
+        This function is largely LLM generated and needs to be verified by a human.
+
+    Args:
+        f (Callable[[Tensor[Float, [N]]], Tensor[Float, [N]]]): Function which
+            computes $J^T x$ (e.g., a vector-Jacobian product), i.e., matrix-free
+            application of an `N`-by-`N` matrix.
+        b (Tensor[Float, [N]]): Right-hand side of linear system, same shape as $x$.
+        init (Tensor[Float, [N]]): Initial guess for $x$.
+        max_iter (int): Maximum number of iterations for the solver.
+        tol (float): Absolute tolerance on the residual norm.
 
     Returns:
-        (torch.Tensor): Solution to the linear system (I - J^T) u = b.
+        Tensor[Float, [N]]: Solution to the linear system, $x$. If the system failed
+            to converge, returns the last iterate.
     """
-    shape = b.shape
-
     x = init.clone()
     r = b - f(x)
     r_flat = r.flatten()
@@ -632,21 +825,21 @@ def cg_solve(
 
     p = r.clone()
 
-    for k in range(maxiter):
-        Ap = f(p)
-        Ap_flat = Ap.flatten()
+    for k in range(max_iter):
+        ap = f(p)
+        ap_flat = ap.flatten()
         p_flat = p.flatten()
 
-        alpha = rsold / torch.dot(p_flat, Ap_flat)
+        alpha = rsold / torch.dot(p_flat, ap_flat)
         x = x + alpha * p
-        r = r - alpha * Ap
+        r = r - alpha * ap
         r_flat = r.flatten()
 
         rsnew = torch.dot(r_flat, r_flat)
         res = torch.sqrt(rsnew)
 
         if res < tol:
-            print(f"CG exiting after {k + 1} iterations, residual: {res:.6e}")
+            LOGGER.info(f"CG exiting after {k + 1} iterations, residual: {res:.6e}")
             return x
 
         beta = rsnew / rsold
@@ -654,12 +847,12 @@ def cg_solve(
         rsold = rsnew
 
     res = torch.sqrt(rsold)
-    print(f"CG exiting after {maxiter} iterations, residual: {res:.6e}")
+    LOGGER.info(f"CG exiting after {max_iter} iterations, residual: {res:.6e}")
     return x
 
 
 def estimate_spectral_radius(
-    f: Callable[[torch.Tensor], torch.Tensor], init: torch.Tensor, maxiter: int
+    f: Callable[[torch.Tensor], torch.Tensor], init: torch.Tensor, max_iter: int
 ) -> torch.Tensor:
     """Estimate spectral radius (max |evals|) of matrix J^T (given as callable f).
 
@@ -669,14 +862,14 @@ def estimate_spectral_radius(
     Args:
         f (Callable[[torch.Tensor], torch.Tensor]): Function that computes v @ J.
         init (torch.Tensor): Initial guess for largest eigenvector.
-        maxiter (int): Maximum number of iterations for the solver.
+        max_iter (int): Maximum number of iterations for the solver.
 
     Returns:
         torch.Tensor: Spectral radius, i.e., the maximum absolute eigenvalue.
     """
     v = init / (init.norm() + 1e-12)
 
-    for _ in range(maxiter):
+    for _ in range(max_iter):
         w = f(v)
         v = w / (w.norm() + 1e-12)
 
@@ -685,26 +878,26 @@ def estimate_spectral_radius(
     return rho_est
 
 
-class Eigsh(torch.autograd.Function):
+class _Eigsh(torch.autograd.Function):
     @staticmethod
     def setup_context(ctx, inputs, output):
-        (a, m, _, sigma, maxiter, tol, bwd_method, bwd_max_iter, bwd_eps) = inputs
+        (a, m, _, sigma, max_iter, tol, bwd_method, bwd_max_iter, bwd_eps) = inputs
         evals, evecs = output
         ctx.save_for_backward(a, m, evals, evecs)
         ctx.bwd_method = bwd_method
         ctx.sigma = sigma
-        ctx.maxiter = maxiter
+        ctx.max_iter = max_iter
         ctx.tol = tol
         ctx.bwd_max_iter = bwd_max_iter
         ctx.bwd_eps = bwd_eps
 
     @staticmethod
     def forward(
-        a: torch.Tensor,
-        m: torch.Tensor,
+        a: sp.SparseTensor,
+        m: sp.SparseTensor,
         k: int = 1,
         sigma: float = 0.0,
-        maxiter: int = 10,
+        max_iter: int = 10,
         tol: float = 1e-10,
         bwd_method: Literal[
             "individual", "truncate", "fixed-point", "step-backward"
@@ -723,7 +916,7 @@ class Eigsh(torch.autograd.Function):
             m_sp = sp.to_scipy(m)
             if k < a.shape[0] - 1:
                 evals, evecs = scipy.sparse.linalg.eigsh(
-                    a_sp, k=k, M=m_sp, sigma=sigma, maxiter=maxiter, tol=tol
+                    a_sp, k=k, M=m_sp, sigma=sigma, maxiter=max_iter, tol=tol
                 )
             else:
                 a_sp = a_sp.toarray()
@@ -736,9 +929,7 @@ class Eigsh(torch.autograd.Function):
                 evecs.real, dtype=dtype, device=device
             )
         else:
-            raise NotImplementedError(
-                f"CUDA sparse eigensolver with adjoint {bwd_method} not implemented."
-            )
+            return power_iterations(a, m, k=k, sigma=sigma, max_iter=max_iter, tol=tol)
 
     @staticmethod
     def backward(
@@ -831,11 +1022,11 @@ class Eigsh(torch.autograd.Function):
                 # print(init, power_iteration(a, init), vjp(init)[1])
                 # print(vjp(init)[1])
                 # u = fixed_point_solver(
-                #     lambda z: grad_evecs + vjp(z)[1], init, ctx.maxiter, ctx.tol
+                #     lambda z: grad_evecs + vjp(z)[1], init, ctx.max_iter, ctx.tol
                 # )
 
                 # start = time.perf_counter()
-                vjp_evecs, vjp_a = make_power_iteration_vjp(a, evecs, m, ctx.sigma)
+                vjp_evecs, vjp_a = _make_power_iteration_vjp(a, evecs, m, ctx.sigma)
                 # print("Making VJP took:", time.perf_counter() - start)
                 u = -gmres_solve(
                     lambda z: vjp_evecs(z)[0],
@@ -862,7 +1053,7 @@ def eigsh(
     m: sp.SparseTensor | None = None,
     k: int = 1,
     sigma: float | None = None,
-    maxiter: int = 200,
+    max_iter: int = 200,
     tol: float = 1e-8,
     bwd_method: Literal[
         "unroll", "individual", "truncate", "fixed-point"
@@ -870,11 +1061,40 @@ def eigsh(
     bwd_max_iter: int = 100,
     bwd_eps: float = 1e-12,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sparse hermitian matrix eigensolver.
+
+    For the forward solve, the function delegates to scipy if the tensor is on the CPU,
+    otherwise, it relies on `power_iterations()`. Independently, the user can specify
+    multiple different approaches to computing gradients of this function.
+
+    Args:
+        a (SparseTensor[Float, [N, N]]): Matrix to eigendecompose.
+        m (SparseTensor[Float, [N, N]]): Diagonal "mass" matrix.
+        k: int: How many eigenvalue-eigenvector pairs to compute.
+        sigma (float | None): Sigma used in the shift-invert mode.
+        max_iter (int): Maximum number of iterations.
+        tol (float): Absolute convergence tolerance.
+        bwd_method (Literal["unroll", "individual", "truncate", "fixed-point"]): Which
+            method to use for computing adjoints. Selecting `unroll` changes the
+            forward solver too. See `the original paper <https://anadodik.github.io/publication/iskra/iskra.pdf>`_
+            for an explanation of the different modes.
+        bwd_max_iter (int): Maximum number of iterations for the backward GMRES solver
+            if bwd_method="fixed-point".
+        bwd_eps (float): Absolute convergence tolerance for the backward GMRES solver
+            if bwd_method="fixed-point".
+
+    Returns:
+        Tensor[Float, [k]]: Eigenvalues.
+        Tensor[Float, [k, N]]: Eigenvectors..
+
+    Raises:
+        ValueError: if a non-diagonal m is passed.
+    """
+    if not sp.is_diag(m):
+        raise ValueError("Only works with diagonal m.")
     if bwd_method == "unroll":
-        return power_iterations(a, m, k=k, sigma=sigma, maxiter=maxiter, tol=tol)
+        return power_iterations(a, m, k=k, sigma=sigma, max_iter=max_iter, tol=tol)
     else:
-        if bwd_method == "fixed-point" and m is not None and not sp.is_diag(m):
-            raise ValueError("bwd_method=fixed-point only works with diagonal m.")
-        return Eigsh.apply(
-            a, m, k, sigma, maxiter, tol, bwd_method, bwd_max_iter, bwd_eps
+        return _Eigsh.apply(
+            a, m, k, sigma, max_iter, tol, bwd_method, bwd_max_iter, bwd_eps
         )

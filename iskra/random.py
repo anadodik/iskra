@@ -188,7 +188,7 @@ class TetrahedronSampler(MeshSampler):
                 Defaults to 620.
         """
         self.tets: torch.Tensor = tets
-        volumes = torch.abs(tetrahedron_volumes(tets))
+        volumes = tetrahedron_volumes(tets)
         self.inv_total_volume: torch.Tensor = 1 / torch.sum(volumes)
         self.pdfs: torch.Tensor = (volumes * self.inv_total_volume).flatten()
         self.generator = torch.Generator(device=self.tets.device)

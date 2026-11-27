@@ -136,7 +136,7 @@ def tetrahedron_volumes_intrinsic(
 ) -> torch.Tensor:
     """Computes the volume of tetrahedra from edge lengths alone.
 
-    Implements [https://en.wikipedia.org/wiki/Heron%27s_formula#Volume_of_a_tetrahedron](https://en.wikipedia.org/wiki/Heron%27s_formula#Volume_of_a_tetrahedron).
+    Implements https://en.wikipedia.org/wiki/Heron%27s_formula#Volume_of_a_tetrahedron.
 
     Args:
         edge_lengths (Tensor[Float, [Edges]]): Tensor of edge lengths where Edges is
