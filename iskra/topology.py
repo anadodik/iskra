@@ -410,7 +410,7 @@ def boundary(faces: torch.Tensor) -> torch.Tensor:
 
     Boundary subfaces are defined as those that appear in one face only.
     A boundary subface inherits the orientation from their parent face
-    (see `face_subface_idcs()` for more information on the subface vertex ordering).
+    (see `face_to_subface_idcs()` for more information on the subface vertex ordering).
 
     Tip:
         The faces can be of arbitrary dimension. Tets, triangles, and edges all work.
@@ -418,7 +418,7 @@ def boundary(faces: torch.Tensor) -> torch.Tensor:
     See Also:
         `iskra.topology.ordered_boundary_vertices()`,
         `iskra.topology.ordered_boundary_edges()`,
-        `iskra.topology.face_subface_idcs()`.
+        `iskra.topology.face_to_subface_idcs()`.
 
     Args:
         faces (Tensor[Int64, [F, FV]]): Face-vertex indices.

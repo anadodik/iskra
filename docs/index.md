@@ -114,6 +114,7 @@ pip install --no-build-isolation -Ceditable.rebuild=true -ve .
 :maxdepth: 2
 :hidden:
 
+Home <self>
 guide/index
 api/index
 ```
